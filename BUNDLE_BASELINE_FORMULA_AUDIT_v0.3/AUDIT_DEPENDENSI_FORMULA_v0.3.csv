@@ -1,0 +1,359 @@
+﻿sheet,formula_cell,dependency_cell,dependency_is_formula
+AHAS INU,K4,C9,False
+AHAS INU,K5,C26,False
+AHAS INU,K6,C18,False
+AHAS INU,J8,I11,True
+AHAS INU,J8,I12,True
+AHAS INU,J8,I13,True
+AHAS INU,L9,L10,True
+AHAS INU,L9,J11,False
+AHAS INU,L10,I11,True
+AHAS INU,L10,I12,True
+AHAS INU,L10,I13,True
+AHAS INU,C11,C10,True
+AHAS INU,D11,D10,False
+AHAS INU,E11,E10,False
+AHAS INU,K11,I11,True
+AHAS INU,K11,J11,False
+AHAS INU,D12,D10,False
+AHAS INU,I12,I11,True
+AHAS INU,J12,J11,False
+AHAS INU,K12,I12,True
+AHAS INU,K12,J12,True
+AHAS INU,D13,D10,False
+AHAS INU,I13,I11,True
+AHAS INU,J13,J12,True
+AHAS INU,K13,I13,True
+AHAS INU,K13,J13,True
+AHAS INU,L14,K16,True
+AHAS INU,L14,K17,True
+AHAS INU,L14,K18,True
+AHAS INU,L14,K19,True
+AHAS INU,L14,K20,True
+AHAS INU,L14,K21,True
+AHAS INU,L14,K22,True
+AHAS INU,L14,K23,True
+AHAS INU,L14,K24,True
+AHAS INU,L14,K25,True
+AHAS INU,L14,K26,True
+AHAS INU,L14,K27,True
+AHAS INU,L14,K28,True
+AHAS INU,L14,K29,True
+AHAS INU,L14,K30,True
+AHAS INU,L14,K31,True
+AHAS INU,L14,K32,True
+AHAS INU,L14,K33,True
+AHAS INU,C15,C14,False
+AHAS INU,D15,D14,False
+AHAS INU,L15,I16,True
+AHAS INU,L15,I17,True
+AHAS INU,L15,I18,True
+AHAS INU,L15,I19,False
+AHAS INU,L15,I20,False
+AHAS INU,L15,I21,True
+AHAS INU,L15,I22,False
+AHAS INU,L15,I23,False
+AHAS INU,L15,I24,False
+AHAS INU,L15,I25,False
+AHAS INU,L15,I26,False
+AHAS INU,L15,I27,False
+AHAS INU,L15,I28,False
+AHAS INU,L15,I29,False
+AHAS INU,L15,I30,False
+AHAS INU,L15,I31,False
+AHAS INU,L15,I32,False
+AHAS INU,L15,I33,False
+AHAS INU,I16,D30,False
+AHAS INU,J16,J11,False
+AHAS INU,K16,I16,True
+AHAS INU,K16,J16,True
+AHAS INU,C17,C10,True
+AHAS INU,C17,C11,True
+AHAS INU,C17,C12,False
+AHAS INU,C17,C13,False
+AHAS INU,C17,C14,False
+AHAS INU,C17,C15,True
+AHAS INU,C17,C16,False
+AHAS INU,D17,D10,False
+AHAS INU,D17,D11,True
+AHAS INU,D17,D12,True
+AHAS INU,D17,D13,True
+AHAS INU,D17,D14,False
+AHAS INU,D17,D15,True
+AHAS INU,E17,E10,False
+AHAS INU,E17,E11,True
+AHAS INU,E17,E12,False
+AHAS INU,E17,E13,False
+AHAS INU,E17,E14,False
+AHAS INU,E17,E15,False
+AHAS INU,E17,E16,False
+AHAS INU,I17,I15,False
+AHAS INU,J17,J16,True
+AHAS INU,K17,I17,True
+AHAS INU,K17,J17,True
+AHAS INU,I18,I16,True
+AHAS INU,J18,J17,True
+AHAS INU,K18,I18,True
+AHAS INU,K18,J18,True
+AHAS INU,J19,J18,True
+AHAS INU,K19,I19,False
+AHAS INU,K19,J19,True
+AHAS INU,J20,J19,True
+AHAS INU,K20,I20,False
+AHAS INU,K20,J20,True
+AHAS INU,I21,I16,True
+AHAS INU,J21,J20,True
+AHAS INU,K21,I21,True
+AHAS INU,K21,J21,True
+AHAS INU,J22,J21,True
+AHAS INU,K22,I22,False
+AHAS INU,K22,J22,True
+AHAS INU,J23,J22,True
+AHAS INU,K23,I23,False
+AHAS INU,K23,J23,True
+AHAS INU,J24,J23,True
+AHAS INU,K24,I24,False
+AHAS INU,K24,J24,True
+AHAS INU,J25,J24,True
+AHAS INU,K25,I25,False
+AHAS INU,K25,J25,True
+AHAS INU,J26,J25,True
+AHAS INU,K26,I26,False
+AHAS INU,K26,J26,True
+AHAS INU,C27,D9,False
+AHAS INU,J27,J26,True
+AHAS INU,K27,I27,False
+AHAS INU,K27,J27,True
+AHAS INU,J28,J27,True
+AHAS INU,K28,I28,False
+AHAS INU,K28,J28,True
+AHAS INU,J29,J28,True
+AHAS INU,K29,I29,False
+AHAS INU,K29,J29,True
+AHAS INU,C30,D10,False
+AHAS INU,J30,J29,True
+AHAS INU,K30,I30,False
+AHAS INU,K30,J30,True
+AHAS INU,C31,C30,True
+AHAS INU,D31,D30,False
+AHAS INU,J31,J30,True
+AHAS INU,K31,I31,False
+AHAS INU,K31,J31,True
+AHAS INU,C32,C30,True
+AHAS INU,J32,J31,True
+AHAS INU,K32,I32,False
+AHAS INU,K32,J32,True
+AHAS INU,C33,C30,True
+AHAS INU,J33,J32,True
+AHAS INU,K33,I33,False
+AHAS INU,K33,J33,True
+AHAS INU,L34,L9,True
+AHAS INU,L34,L14,True
+AHAS INU,C35,C34,False
+AHAS INU,L35,K13,True
+AHAS INU,L35,K21,True
+AHAS INU,C36,C30,True
+AHAS INU,C36,C31,True
+AHAS INU,C36,C32,True
+AHAS INU,C36,C33,True
+AHAS INU,C36,C34,False
+AHAS INU,C36,C35,True
+AHAS INU,D36,D30,False
+AHAS INU,D36,D31,True
+AHAS INU,D36,D32,False
+AHAS INU,D36,D33,False
+AHAS INU,D36,D34,False
+AHAS INU,D36,D35,False
+AHAS INU,L36,L34,True
+AHAS INU,L36,L35,True
+AHAS INU,L37,L36,True
+AHAS INU,L37,J11,False
+AHAS INU,C38,D30,False
+AHAS INU,C38,C30,True
+AHAS INU,C38,C32,True
+AHAS INU,C38,C33,True
+AHAS INU,C38,C34,False
+AHAS INU,L38,L36,True
+AHAS INU,L38,L14,True
+AHAS INU,C39,D30,False
+AHAS INU,C40,C38,True
+AHAS INU,C40,C39,True
+AHAS INU,C41,C40,True
+AHAS INU,C42,C40,True
+AHAS INU,C42,C41,True
+AHAS Solar bawah,K3,C8,False
+AHAS Solar bawah,K4,C25,False
+AHAS Solar bawah,K5,C17,False
+AHAS Solar bawah,J7,I10,True
+AHAS Solar bawah,J7,I11,True
+AHAS Solar bawah,J7,I12,True
+AHAS Solar bawah,L8,L9,True
+AHAS Solar bawah,L8,J10,False
+AHAS Solar bawah,L9,I10,True
+AHAS Solar bawah,L9,I11,True
+AHAS Solar bawah,L9,I12,True
+AHAS Solar bawah,C10,C9,False
+AHAS Solar bawah,D10,D9,False
+AHAS Solar bawah,E10,E9,False
+AHAS Solar bawah,K10,I10,True
+AHAS Solar bawah,K10,J10,False
+AHAS Solar bawah,I11,I10,True
+AHAS Solar bawah,J11,J10,False
+AHAS Solar bawah,K11,I11,True
+AHAS Solar bawah,K11,J11,True
+AHAS Solar bawah,I12,I10,True
+AHAS Solar bawah,J12,J11,True
+AHAS Solar bawah,K12,I12,True
+AHAS Solar bawah,K12,J12,True
+AHAS Solar bawah,L13,K15,True
+AHAS Solar bawah,L13,K16,True
+AHAS Solar bawah,L13,K17,True
+AHAS Solar bawah,L13,K18,True
+AHAS Solar bawah,L13,K19,True
+AHAS Solar bawah,L13,K20,True
+AHAS Solar bawah,L13,K21,True
+AHAS Solar bawah,L13,K22,True
+AHAS Solar bawah,L13,K23,True
+AHAS Solar bawah,L13,K24,True
+AHAS Solar bawah,L13,K25,True
+AHAS Solar bawah,L13,K26,True
+AHAS Solar bawah,L13,K27,True
+AHAS Solar bawah,L13,K28,True
+AHAS Solar bawah,L13,K29,True
+AHAS Solar bawah,L13,K30,True
+AHAS Solar bawah,L13,K31,True
+AHAS Solar bawah,L13,K32,True
+AHAS Solar bawah,C14,C13,False
+AHAS Solar bawah,D14,D13,False
+AHAS Solar bawah,L14,I15,True
+AHAS Solar bawah,L14,I16,True
+AHAS Solar bawah,L14,I17,True
+AHAS Solar bawah,L14,I18,False
+AHAS Solar bawah,L14,I19,False
+AHAS Solar bawah,L14,I20,True
+AHAS Solar bawah,L14,I21,False
+AHAS Solar bawah,L14,I22,False
+AHAS Solar bawah,L14,I23,False
+AHAS Solar bawah,L14,I24,False
+AHAS Solar bawah,L14,I25,False
+AHAS Solar bawah,L14,I26,False
+AHAS Solar bawah,L14,I27,False
+AHAS Solar bawah,L14,I28,False
+AHAS Solar bawah,L14,I29,False
+AHAS Solar bawah,L14,I30,False
+AHAS Solar bawah,L14,I31,False
+AHAS Solar bawah,L14,I32,False
+AHAS Solar bawah,I15,D29,True
+AHAS Solar bawah,J15,J10,False
+AHAS Solar bawah,K15,I15,True
+AHAS Solar bawah,K15,J15,True
+AHAS Solar bawah,C16,C9,False
+AHAS Solar bawah,C16,C10,True
+AHAS Solar bawah,C16,C11,False
+AHAS Solar bawah,C16,C12,False
+AHAS Solar bawah,C16,C13,False
+AHAS Solar bawah,C16,C14,True
+AHAS Solar bawah,C16,C15,False
+AHAS Solar bawah,D16,D9,False
+AHAS Solar bawah,D16,D10,True
+AHAS Solar bawah,D16,D11,False
+AHAS Solar bawah,D16,D12,False
+AHAS Solar bawah,D16,D13,False
+AHAS Solar bawah,D16,D14,True
+AHAS Solar bawah,E16,E9,False
+AHAS Solar bawah,E16,E10,True
+AHAS Solar bawah,E16,E11,False
+AHAS Solar bawah,E16,E12,False
+AHAS Solar bawah,E16,E13,False
+AHAS Solar bawah,E16,E14,False
+AHAS Solar bawah,E16,E15,False
+AHAS Solar bawah,I16,I14,False
+AHAS Solar bawah,J16,J15,True
+AHAS Solar bawah,K16,I16,True
+AHAS Solar bawah,K16,J16,True
+AHAS Solar bawah,I17,I15,True
+AHAS Solar bawah,J17,J16,True
+AHAS Solar bawah,K17,I17,True
+AHAS Solar bawah,K17,J17,True
+AHAS Solar bawah,J18,J17,True
+AHAS Solar bawah,K18,I18,False
+AHAS Solar bawah,K18,J18,True
+AHAS Solar bawah,J19,J18,True
+AHAS Solar bawah,K19,I19,False
+AHAS Solar bawah,K19,J19,True
+AHAS Solar bawah,I20,I15,True
+AHAS Solar bawah,J20,J19,True
+AHAS Solar bawah,K20,I20,True
+AHAS Solar bawah,K20,J20,True
+AHAS Solar bawah,J21,J20,True
+AHAS Solar bawah,K21,I21,False
+AHAS Solar bawah,K21,J21,True
+AHAS Solar bawah,J22,J21,True
+AHAS Solar bawah,K22,I22,False
+AHAS Solar bawah,K22,J22,True
+AHAS Solar bawah,J23,J22,True
+AHAS Solar bawah,K23,I23,False
+AHAS Solar bawah,K23,J23,True
+AHAS Solar bawah,J24,J23,True
+AHAS Solar bawah,K24,I24,False
+AHAS Solar bawah,K24,J24,True
+AHAS Solar bawah,J25,J24,True
+AHAS Solar bawah,K25,I25,False
+AHAS Solar bawah,K25,J25,True
+AHAS Solar bawah,C26,D8,False
+AHAS Solar bawah,J26,J25,True
+AHAS Solar bawah,K26,I26,False
+AHAS Solar bawah,K26,J26,True
+AHAS Solar bawah,J27,J26,True
+AHAS Solar bawah,K27,I27,False
+AHAS Solar bawah,K27,J27,True
+AHAS Solar bawah,J28,J27,True
+AHAS Solar bawah,K28,I28,False
+AHAS Solar bawah,K28,J28,True
+AHAS Solar bawah,D29,C29,True
+AHAS Solar bawah,J29,J28,True
+AHAS Solar bawah,K29,I29,False
+AHAS Solar bawah,K29,J29,True
+AHAS Solar bawah,C30,C29,True
+AHAS Solar bawah,D30,D29,True
+AHAS Solar bawah,J30,J29,True
+AHAS Solar bawah,K30,I30,False
+AHAS Solar bawah,K30,J30,True
+AHAS Solar bawah,J31,J30,True
+AHAS Solar bawah,K31,I31,False
+AHAS Solar bawah,K31,J31,True
+AHAS Solar bawah,J32,J31,True
+AHAS Solar bawah,K32,I32,False
+AHAS Solar bawah,K32,J32,True
+AHAS Solar bawah,L33,L8,True
+AHAS Solar bawah,L33,L13,True
+AHAS Solar bawah,L34,K12,True
+AHAS Solar bawah,L34,K20,True
+AHAS Solar bawah,C35,C29,True
+AHAS Solar bawah,C35,C30,True
+AHAS Solar bawah,C35,C31,False
+AHAS Solar bawah,C35,C32,False
+AHAS Solar bawah,C35,C33,False
+AHAS Solar bawah,C35,C34,False
+AHAS Solar bawah,D35,D29,True
+AHAS Solar bawah,D35,D30,True
+AHAS Solar bawah,D35,D31,False
+AHAS Solar bawah,D35,D32,False
+AHAS Solar bawah,D35,D33,False
+AHAS Solar bawah,D35,D34,False
+AHAS Solar bawah,L35,L33,True
+AHAS Solar bawah,L35,L34,True
+AHAS Solar bawah,L36,L35,True
+AHAS Solar bawah,L36,J10,False
+AHAS Solar bawah,C37,D29,True
+AHAS Solar bawah,C37,C29,True
+AHAS Solar bawah,C37,C31,False
+AHAS Solar bawah,C37,C32,False
+AHAS Solar bawah,C37,C33,False
+AHAS Solar bawah,L37,L35,True
+AHAS Solar bawah,L37,L13,True
+AHAS Solar bawah,C39,C37,True
+AHAS Solar bawah,C39,C38,False
+AHAS Solar bawah,C40,C39,True
+AHAS Solar bawah,C41,C39,True
+AHAS Solar bawah,C41,C40,True
