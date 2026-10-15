@@ -1,0 +1,100 @@
+:root { color-scheme: light; font-family: Arial, sans-serif; color: #000; background: #fff; }
+body { margin: 0; }
+main { max-width: 64rem; margin: 2rem auto; padding: 0 1.5rem; }
+h1 { font-size: clamp(1.8rem, 5vw, 2.8rem); line-height: 1.15; }
+p { line-height: 1.6; }
+.eyebrow { color: #45596b; font-weight: 600; }
+section { margin-top: 2rem; padding: 1.5rem; background: #fff; border: 1px solid #d6dfe6; border-radius: .5rem; }
+fieldset { padding: 0; border: 0; min-width: 0; }
+form { margin: 1.5rem 0; padding-bottom: 1rem; border-bottom: 1px solid #d6dfe6; }
+label { display: block; font-weight: 600; margin: .8rem 0; }
+input, select, textarea, button { font: inherit; box-sizing: border-box; border: 1px solid #8295a5; border-radius: .35rem; padding: .65rem .8rem; }
+input, select, textarea { display: block; margin-top: .35rem; max-width: 100%; width: 100%; background: #fff; color: #172b3a; }
+textarea { min-height: 6rem; }
+button { background: #174e6b; color: #fff; cursor: pointer; min-height: 44px; }
+button:disabled, fieldset:disabled button { opacity: .55; cursor: wait; }
+:focus-visible { outline: 3px solid #c36d12; outline-offset: 3px; }
+.toolbar, .row { display: flex; gap: .75rem; flex-wrap: wrap; align-items: center; margin: 1rem 0; }
+.row label { flex: 1; min-width: 15rem; }
+article { border-top: 1px solid #d6dfe6; margin-top: 1rem; padding-top: 1rem; }
+code, pre { overflow-wrap: anywhere; font-size: .85rem; }
+pre { white-space: pre-wrap; max-height: 28rem; overflow: auto; padding: 1rem; background: #f4f6f8; }
+output { display: block; padding: .5rem 0; font-weight: 700; }
+[role=alert] { border-left: 4px solid #a42424; padding: .75rem; background: #fff1f0; color: #791b1b; }
+[role=status] { min-height: 1.5rem; }
+.check { display: flex; gap: .6rem; align-items: center; }
+.check input { width: 1.2rem; }
+.read-only { display: block; font-weight: 400; padding: .5rem 0; }
+summary { cursor: pointer; padding: .7rem 0; }
+@media (max-width: 600px) { main { padding: 0 .75rem; } section { padding: 1rem; } .row label { min-width: 100%; } }
+
+.workbook-app { max-width: none; margin: 0; padding: 0; }
+.app-heading { display: flex; align-items: baseline; gap: 1rem; padding: .6rem 1.6rem .3rem; }
+.app-heading h1 { font-size: 16px; margin: 0; }
+.app-heading > span { font-size: 12px; color: #555; }
+.workbook-app > [role=status] { padding: 0 1.6rem; font-size: 12px; min-height: 16px; }
+.workspace-actions { display: flex; align-items: center; flex-wrap: wrap; gap: .6rem; padding: .25rem 1.6rem .6rem; font-size: 12px; border-bottom: 1px solid #d0d0d0; }
+.workspace-actions button, .workspace-actions select { width: auto; margin: 0; padding: .3rem .6rem; min-height: 30px; border: 1px solid #999; border-radius: 2px; background: #fff; color: #000; font-size: 12px; }
+.workspace-actions .tools-toggle { margin-left: auto; }
+.draft-label { color: #555; }
+.sheet-caption { padding: .4rem 26px; font-size: 12px; color: #555; border-top: 1px solid #ddd; }
+.workbook-tools { margin: .5rem 26px 2rem; max-width: 1100px; }
+.workbook-tools > summary { font-size: 13px; }
+.workbook-tools section { border-radius: 0; border-color: #aaa; }
+.login-app { max-width: 30rem; }
+.login-app .app-heading { padding: 0; display: block; }
+.login-app button, .workbook-tools button { background: #fff; color: #000; border-radius: 2px; }
+.sheet-viewport { width: 100%; max-width: 100%; overflow: auto; background: #fff; }
+.procurement-sheet { display: grid; grid-template-columns: calc((var(--vendor-columns) + 1) * 101px) 606px; column-gap: 101px; align-items: start; width: max-content; min-width: 1158px; min-height: 974px; padding: 11px 21px 19px 26px; box-sizing: border-box; color: #000; background-image: linear-gradient(#dedede 1px, transparent 1px), linear-gradient(90deg, #dedede 1px, transparent 1px); background-size: 101px 23.5px; background-position: 26px 11px; }
+.procurement-sheet table { border-collapse: collapse; table-layout: fixed; margin: 0; border: 1px solid #000; }
+.procurement-sheet th, .procurement-sheet td { border: 1px solid #000; padding: 0 6px; height: 24px; box-sizing: border-box; overflow: hidden; white-space: nowrap; vertical-align: middle; line-height: 1.15; }
+.procurement-sheet .sheet-input { display: inline-block; width: 100%; height: 21px; max-width: 100%; min-width: 0; min-height: 0; padding: 0; margin: 0; border: 0; border-radius: 0; color: #000; background: transparent; font: inherit; line-height: inherit; text-align: inherit; }
+.sheet-input::placeholder { color: #777; opacity: 1; }
+.procurement-sheet .sheet-input:disabled { opacity: 1; cursor: default; }
+.procurement-sheet .sheet-input:focus { outline: 2px solid #2878ff; outline-offset: -1px; }
+.procurement-sheet .sheet-result { display: block; overflow: hidden; text-overflow: clip; }
+.vendor-sheet { width: 100%; font: 16px "Times New Roman", Times, serif; }
+.vendor-sheet th { font-weight: bold; text-align: center; }
+.vendor-sheet .vendor-title th { height: 37px; font-size: 18px; }
+.procurement-sheet .sheet-spacer td { height: 23.5px; padding: 0; border-color: transparent; background: transparent; }
+.vendor-sheet .vendor-meta td { height: 23.5px; border-color: transparent; padding: 0 3px; }
+.vendor-meta td:first-child span:last-child { float: right; padding-right: 10px; }
+.vendor-sheet .sheet-number, .vendor-total td { text-align: center; }
+.vendor-total td { font-weight: bold; }
+.vendor-notes td { height: 92px; vertical-align: top; padding-top: 4px; }
+.procurement-sheet .vendor-choice { display: block; background: transparent; border: 0; border-radius: 0; color: #000; width: 100%; height: 21px; min-height: 0; padding: 0; margin: 0; font: inherit; font-weight: bold; }
+.vendor-choice[aria-pressed=true] { text-decoration: underline; text-underline-offset: 3px; }
+.conversion-sheet { width: 303px; margin-top: 23px !important; font: 16px "Times New Roman", Times, serif; }
+.conversion-sheet th { text-align: center; }
+.conversion-sheet td { text-align: right; }
+.conversion-sheet thead th { height: 24px; }
+.conversion-sheet .conversion-period th, .conversion-sheet .conversion-meta th, .conversion-sheet .conversion-meta td { border-color: transparent; height: 23.5px; text-align: left; padding-left: 6px; }
+.conversion-meta th span { float: right; }
+.conversion-sheet tbody > tr:not(.conversion-meta,.conversion-period) > th { font-weight: normal; }
+.conversion-sheet tbody > tr:has(th:first-child:nth-last-child(3)) > th { font-weight: bold; }
+.conversion-sheet .conversion-total th, .conversion-sheet .conversion-total td { font-weight: bold; }
+.mue-row td:first-child { background: #b3b3b3; text-align: center; }
+.mue-row td:last-child { font-family: Arial, sans-serif; font-size: 13px; }
+.ahs-sheet { width: 606px; font: 13px Arial, sans-serif; }
+.ahs-sheet td { text-align: right; }
+.ahs-sheet .ahs-title th { height: 37px; background: #ff0; font-size: 24px; font-weight: 700; }
+.ahs-sheet .ahs-meta th, .ahs-sheet .ahs-meta td { height: 23.6px; background: #ff0; text-align: left; font-weight: bold; }
+.ahs-sheet .ahs-meta th { font-size: 12px; }
+.ahs-sheet .ahs-include th { text-align: right; }
+.ahs-sheet .income-row { background: #0f0; }
+.ahs-sheet .cost-row { background: #f66; }
+.ahs-sheet .income-row > th[colspan], .ahs-sheet .cost-row > th[colspan], .ahs-sheet .profit-row > th { text-align: left; font-weight: bold; }
+.ahs-sheet .income-row > td:nth-child(2), .ahs-sheet .cost-row > td:nth-child(2) { text-align: left; }
+.ahs-sheet .category { text-align: center; font-weight: bold; vertical-align: bottom; }
+.ahs-sheet .cost-row > td, .ahs-sheet .cost-row > th { height: 23.1667px; }
+.ahs-sheet .cost-row > th[colspan], .ahs-sheet .cost-row > th[colspan] + td { height: 24px; }
+.ahs-sheet .currency-cell { position: relative; padding-left: 32px; text-align: right !important; }
+.currency-cell > span:first-child { position: absolute; left: 7px; top: 50%; transform: translateY(-50%); }
+.ahs-sheet .profit-row { background: #999; font-weight: bold; }
+.ahs-sheet .profit-row th, .ahs-sheet .profit-row td { height: 22.6px; }
+.ahs-sheet .ahs-notes td { height: 90px; background: #fff; vertical-align: top; text-align: left; padding-top: 4px; }
+.ahs-notes .sheet-input { display: block; }
+.additional-sheet { grid-column: 1 / -1; width: 606px; margin-top: 23px !important; font: 13px Arial, sans-serif; }
+.additional-sheet th { width: 303px; text-align: left; font-weight: normal; }
+.additional-sheet td { text-align: right; }
+@media (max-width: 600px) { .workbook-app { padding: 0; } .app-heading { padding-left: .8rem; } .app-heading > span { display: none; } .workspace-actions { padding-left: .8rem; gap: .4rem; } .workspace-actions .tools-toggle { margin-left: 0; } .workbook-tools { margin-left: .8rem; margin-right: .8rem; } }
