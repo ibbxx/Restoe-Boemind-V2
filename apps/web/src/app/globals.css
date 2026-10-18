@@ -275,8 +275,34 @@ summary { cursor: pointer; padding: .7rem 0; }
   .sheet-canvas-toolbar .toolbar-group { border: 0; padding-right: 0; }
 }
 
-@page { size: A4 landscape; margin: 4mm; }
+.workbook-print-host { position: fixed; left: -100000px; top: 0; visibility: hidden; background: #fff; color: #111827; }
+.workbook-print-page { position: relative; width: 285mm; height: 197mm; }
+.workbook-print-report { position: absolute; top: 0; left: 0; width: 285mm; display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 5mm; align-items: start; transform-origin: top left; font: 8pt/1.2 Arial, sans-serif; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+.workbook-print-report .print-left, .workbook-print-report .print-right { min-width: 0; }
+.workbook-print-report .print-table { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 0 0 4mm; background: #fff; }
+.workbook-print-report .print-table:last-child { margin-bottom: 0; }
+.workbook-print-report th, .workbook-print-report td { position: relative; box-sizing: border-box; height: 4mm; padding: .5mm 1mm; border: .2mm solid #64748b; color: #111827; text-align: right; vertical-align: middle; white-space: pre-wrap; overflow-wrap: anywhere; font-weight: 400; font-variant-numeric: tabular-nums; }
+.workbook-print-report th, .workbook-print-report .cell-label, .workbook-print-report .cost-description, .workbook-print-report tr > :first-child { text-align: left; }
+.workbook-print-report .sheet-cell { position: static; min-height: 0; }
+.workbook-print-report .cell-print-value, .workbook-print-report .vendor-print-name { display: block; visibility: visible; }
+.workbook-print-report .vendor-title > *, .workbook-print-report .conversion-title > *, .workbook-print-report .print-conversion thead tr:first-child > *, .workbook-print-report .ahs-title > * { height: 7mm; padding: 1mm; font-size: 11pt; font-weight: 700; letter-spacing: 0; text-align: center; background: #fff; color: #111827; }
+.workbook-print-report .ahs-title > *, .workbook-print-report .ahs-meta > * { background: #ffff00; }
+.workbook-print-report .vendor-meta > *, .workbook-print-report .conversion-meta > *, .workbook-print-report .conversion-period > *, .workbook-print-report .ahs-meta > * { text-align: left; }
+.workbook-print-report .income-row > * { background: #00e600; }
+.workbook-print-report .cost-row > * { background: #ff6868; }
+.workbook-print-report .profit-row > *, .workbook-print-report .mue-row > * { background: #b3b3b3; }
+.workbook-print-report .vendor-columns > *, .workbook-print-report .conversion-columns > *, .workbook-print-report .vendor-total > *, .workbook-print-report .conversion-total > * { background: #f1f5f9; font-weight: 700; }
+.workbook-print-report .category { text-align: center; font-weight: 700; }
+.workbook-print-report .income-total > *, .workbook-print-report .cost-total > *, .workbook-print-report .profit-row > * { font-weight: 700; }
+.workbook-print-report .vendor-notes > *, .workbook-print-report .ahs-notes > * { height: 12mm; text-align: left; vertical-align: top; }
+.workbook-print-report .sheet-spacer > * { height: 2mm; padding: 0; }
+.workbook-print-report .currency-cell { padding-left: 6mm; }
+.workbook-print-report .currency-cell > span:first-child:not(.cell-print-value):not(.sheet-result):not(.cell-label) { left: 1mm; font-size: inherit; }
+@page { size: A4 landscape; margin: 6mm; }
 @media print {
+  body:has(> .workbook-print-host) > :not(.workbook-print-host) { display: none !important; }
+  body > .workbook-print-host { position: static; visibility: visible; margin: 0; padding: 0; }
+  .workbook-print-page { break-inside: avoid; page-break-inside: avoid; }
   :root, body, .workbook-app { color: #0f172a; background: #fff; }
   .workbook-app { min-height: 0; }
   .app-header, .operation-status, .workbook-app > [role=alert], .sheet-caption, .sheet-canvas-toolbar, .sheet-overview button, .sheet-section-title button, .conversion-control-bar { display: none !important; }

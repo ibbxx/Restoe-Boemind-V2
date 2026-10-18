@@ -10,8 +10,8 @@ import { DecimalArithmetic } from "../engine/decimal.ts";
 
 type OfferValue = OfferRevision["values"][number];
 
-// Capture committed worksheet results; selected revisions keep their original inputs.
-export function recordVendorRevisions(s: WorkbookSnapshot, configuration: EngineConfiguration | null, historical: readonly WorkbookSnapshot[] = []): WorkbookSnapshot {
+// Keep current vendor values; selection follows the same vendor as its inputs change.
+export function recordVendorRevisions(s: WorkbookSnapshot, configuration: EngineConfiguration | null): WorkbookSnapshot {
   if (!configuration) return s;
   const tables = s.worksheets.filter(w => w.stage === "EVALUASI_VENDOR").flatMap(w => w.tables);
   const graph = compileGraph(s, configuration), needed = new Set<string>();
@@ -57,15 +57,25 @@ export function recordVendorRevisions(s: WorkbookSnapshot, configuration: Engine
     if (!values.length) continue;
     const previous = s.analysis.offerRevisions.filter(r => r.offerId === offer.id).reduce<(typeof revisions)[number] | undefined>(
       (latest, r) => !latest || r.revisionNumber > latest.revisionNumber ? r : latest, undefined);
-    if (previous && comparable(previous.values) === comparable(values)) continue;
+    if (previous && comparable(previous.values) === comparable(values)) { heads.set(offer.id, previous.id); continue; }
     const revisionId = id<"offer-revision">();
-    revisions.push({ id: revisionId, offerId: offer.id, revisionNumber: nextOfferRevisionNumber(offer.id, [s, ...historical]), values });
+    revisions.push({ id: revisionId, offerId: offer.id, revisionNumber: nextOfferRevisionNumber(offer.id, [s]), values });
     heads.set(offer.id, revisionId);
   }
   const renamed = s.analysis.vendors.some(v => names.has(v.id) && names.get(v.id) !== v.name);
-  if (!heads.size && !renamed) return s;
+  const latest = (revisionId: StableId<"offer-revision"> | null) => {
+    const offerId = s.analysis.offerRevisions.find(revision => revision.id === revisionId)?.offerId;
+    return offerId ? heads.get(offerId) ?? revisionId : revisionId;
+  };
+  const retained = new Set([...heads.values(), ...Object.values(s.profiles).flatMap(profile => profile.reviewContext?.selectedOfferRevisionId ? [profile.reviewContext.selectedOfferRevisionId] : []),
+    ...s.calculationRunRefs.flatMap(run => run.selectedOfferRevisionId ? [run.selectedOfferRevisionId] : [])]);
+  const current = revisions.filter(revision => retained.has(revision.id));
+  if (!renamed && canonicalJson(current) === canonicalJson(s.analysis.offerRevisions) && latest(s.selectedOfferRevisionId) === s.selectedOfferRevisionId &&
+    (!s.workbook || Object.values(s.workbook.selections).every(revisionId => latest(revisionId) === revisionId))) return s;
   return changeWorkbook(s, {
-    analysis: { ...s.analysis, offerRevisions: revisions, vendors: s.analysis.vendors.map(v => names.has(v.id) ? { ...v, name: names.get(v.id)! } : v) },
-    ...(s.workbook ? { workbook: { ...s.workbook, offers: s.workbook.offers.map(o => heads.has(o.offerId) ? { ...o, revisionId: heads.get(o.offerId)! } : o) } } : {}),
+    selectedOfferRevisionId: latest(s.selectedOfferRevisionId),
+    analysis: { ...s.analysis, offerRevisions: current, vendors: s.analysis.vendors.map(v => names.has(v.id) ? { ...v, name: names.get(v.id)! } : v) },
+    ...(s.workbook ? { workbook: { ...s.workbook, offers: s.workbook.offers.map(o => heads.has(o.offerId) ? { ...o, revisionId: heads.get(o.offerId)! } : o),
+      selections: { INU: latest(s.workbook.selections.INU), SOLAR_BAWAH: latest(s.workbook.selections.SOLAR_BAWAH) } } } : {}),
   });
 }

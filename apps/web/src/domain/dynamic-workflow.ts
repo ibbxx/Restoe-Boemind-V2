@@ -8,6 +8,7 @@ import { SOURCE_HASH, SOURCE_SHEETS } from "./source-template.ts";
 import { parseFormula, references } from "../engine/parser.ts";
 import { PROFILES } from "./profiles.ts";
 import { addColumn, addRow } from "./structure.ts";
+import { vendorComponents, vendorComponentRoles } from "./vendor-components.ts";
 
 export function reconcilePresentation(s: WorkbookSnapshot): WorkbookSnapshot {
   if (!s.workbook) return s;
@@ -287,29 +288,91 @@ export function selectSheetOffer(s: WorkbookSnapshot, revisionId: StableId<"offe
     const unit = label === "Nama vendor" ? "1" : "IDR/L";
     const prior = mappings.find(m => m.targetCellId === targetCellId), mappingId = prior?.id ?? id<"mapping">();
     if (prior) mappings.splice(mappings.indexOf(prior), 1);
-    mappings.push({ id: mappingId, versionId: id<"mapping-version">(), analysisId: s.analysisId, scope: profile, sourceCellId, targetCellId,
-      sourceComponent: `offer-revision:${revision.id}:${sourceCellId}`, sourceUnit: unit, targetUnit: unit, transformExpression: null, status: "ACTIVE",
+    mappings.push(prior?.sourceComponent === `vendor-live:${revision.offerId}:${sourceCellId}` && prior.provenance.sourceRef === revision.id ? prior : { id: mappingId, versionId: id<"mapping-version">(), analysisId: s.analysisId, scope: profile, sourceCellId, targetCellId,
+      sourceComponent: `vendor-live:${revision.offerId}:${sourceCellId}`, sourceUnit: unit, targetUnit: unit, transformExpression: null, status: "ACTIVE",
       provenance: { actorId, changeEventId: id<"change-event">(), sourceRef: revision.id, reason: "Pilihan revisi manual pada worksheet" } });
     writers.set(targetCellId, { kind: "MAPPING", mappingId });
   }
+  let extraAnchorRowId: StableId<"row"> | undefined;
+  for (const component of vendorComponents(s, revision.offerId).filter(component => !vendorComponentRoles.some(role => role === component.role))) {
+    if (s.workbook?.cells.some(p => p.cellId === component.source.id && p.unit === "text")) {
+      s = changeWorkbook(s, { workbook: { ...s.workbook, cells: s.workbook.cells.map(p => p.cellId === component.source.id ? { ...p, unit: "IDR/L" as const } : p),
+        configuration: s.workbook.configuration ? { ...s.workbook.configuration, version: id<"policy">(), units: s.workbook.configuration.units.map(unit => unit.cellId === component.source.id ? { ...unit, symbol: "IDR/L", dimensions: units["IDR/L"] } : unit) } : null } });
+    }
+    const key = `vendor-extra:${component.labelCell?.id ?? component.source.id}`;
+    let targetCellId = s.workbook ? s.workbook.bindings.find(b => b.profile === profile && b.key === key)?.cellId
+      : s.worksheets.find(w => w.stage === "KONVERSI_JAGAD")?.tables.flatMap(t => t.cells.filter(c => c.scope === profile && t.rows.some(row => row.id === c.rowId && row.label === `Harga INU · ${key}`)))[0]?.id;
+    if (!targetCellId && s.workbook) {
+      const table = s.worksheets.find(w => w.stage === "KONVERSI_JAGAD")!.tables.find(t => t.cells.some(c => c.scope === profile))!;
+      const anchor = table.cells.find(c => s.workbook!.cells.some(p => p.cellId === c.id && p.address === `C${36 - offset}`))!;
+      s = addRow(s, table.id, { label: key, scope: profile, afterRowId: extraAnchorRowId ?? anchor.rowId });
+      const updated = s.worksheets.flatMap(w => w.tables).find(t => t.id === table.id)!;
+      targetCellId = updated.cells.find(c => updated.rows.some(row => row.id === c.rowId && row.label === key) && updated.columns.some(col => col.id === c.columnId && col.label === "C"))!.id;
+      s = changeWorkbook(s, { workbook: { ...s.workbook!, bindings: [...s.workbook!.bindings, { profile, key, cellId: targetCellId }],
+        cells: s.workbook!.cells.map(p => p.cellId === targetCellId ? { ...p, unit: "IDR/L" as const } : p),
+        configuration: s.workbook!.configuration ? { ...s.workbook!.configuration, version: id<"policy">(), units: s.workbook!.configuration.units.map(unit => unit.cellId === targetCellId ? { ...unit, symbol: "IDR/L", dimensions: units["IDR/L"] } : unit) } : null } });
+    } else if (!targetCellId) {
+      const added = appendField(s, "KONVERSI_JAGAD", profile, `Harga INU · ${key}`, { kind: "UNSET" });
+      s = added.snapshot; targetCellId = added.cellId;
+    }
+    extraAnchorRowId = s.worksheets.flatMap(w => w.tables.flatMap(t => t.cells)).find(c => c.id === targetCellId)?.rowId;
+    const prior = mappings.find(m => m.targetCellId === targetCellId), mappingId = prior?.id ?? id<"mapping">();
+    if (prior) mappings.splice(mappings.indexOf(prior), 1);
+    mappings.push(prior?.sourceComponent === `vendor-live:${revision.offerId}:${component.source.id}` && prior.provenance.sourceRef === revision.id ? prior : { id: mappingId, versionId: id<"mapping-version">(), analysisId: s.analysisId, scope: profile,
+      sourceCellId: component.source.id, targetCellId, sourceComponent: `vendor-live:${revision.offerId}:${component.source.id}`, sourceUnit: "IDR/L", targetUnit: "IDR/L", transformExpression: null, status: "ACTIVE",
+      provenance: { actorId, changeEventId: id<"change-event">(), sourceRef: revision.id, reason: "Komponen vendor terpilih mengikuti worksheet aktif" } });
+    writers.set(targetCellId, { kind: "MAPPING", mappingId });
+  }
+  const obsolete = new Set(mappings.filter(mapping => mapping.scope === profile && mapping.sourceComponent.startsWith("vendor-live:") && !writers.has(mapping.targetCellId)).map(mapping => mapping.id));
   const formulas = s.formulas.filter(formula => !writers.has(formula.targetCellId));
   const retainedFormulaIds = new Set(formulas.map(formula => formula.id));
-  return changeWorkbook(s, { selectedOfferRevisionId: profile === s.activeProfile ? revisionId : s.selectedOfferRevisionId, mappings, formulas,
+  return changeWorkbook(s, { selectedOfferRevisionId: profile === s.activeProfile ? revisionId : s.selectedOfferRevisionId, mappings: mappings.filter(mapping => !obsolete.has(mapping.id)), formulas,
     profiles: { ...s.profiles, [profile]: { ...s.profiles[profile], formulaIds: s.profiles[profile].formulaIds.filter(id => retainedFormulaIds.has(id)) } },
-    worksheets: s.worksheets.map(w => ({ ...w, tables: w.tables.map(t => ({ ...t, cells: t.cells.map(c => writers.has(c.id) ? { ...c, source: writers.get(c.id)! } : c) })) })),
+    worksheets: s.worksheets.map(w => ({ ...w, tables: w.tables.map(t => ({ ...t, cells: t.cells.map(c => writers.has(c.id) ? { ...c, source: writers.get(c.id)! }
+      : c.source.kind === "MAPPING" && obsolete.has(c.source.mappingId) ? { ...c, source: { kind: "INPUT" as const, input: { kind: "UNSET" as const } } } : c) })) })),
     ...(s.workbook ? { workbook: { ...s.workbook, selections: { ...s.workbook.selections, [profile]: revisionId } } } : {}) });
 }
 
-// Upgrade active drafts only; preserve each profile's manually selected revision.
+// Rebuild source links from current vendor columns, preserving manual vendor choices.
 export function prepareSelectedVendorMappings(s: WorkbookSnapshot, actorId: StableId<"user">) {
+  s = prepareProjectLocation(s, actorId);
   for (const profile of s.workbook ? PROFILES : [s.activeProfile]) {
     const revisionId = s.workbook ? s.workbook.selections[profile] : s.selectedOfferRevisionId;
-    if (revisionId && s.mappings.filter(mapping => mapping.scope === profile && mapping.provenance.sourceRef === revisionId &&
-      mapping.sourceComponent.startsWith("offer-revision:")).length < (s.workbook ? 9 : 8)) {
+    if (revisionId) {
       s = selectSheetOffer(s, revisionId, actorId, profile);
     }
   }
   return s;
+}
+
+function prepareProjectLocation(s: WorkbookSnapshot, actorId: StableId<"user">) {
+  const fields = s.worksheets.flatMap(w => w.tables.flatMap(t => t.cells.map(cell => ({ cell, stage: w.stage,
+    label: t.rows.find(row => row.id === cell.rowId)?.label }))));
+  const source = fields.find(field => field.stage === "EVALUASI_VENDOR" && (s.workbook
+    ? s.workbook.cells.some(p => p.cellId === field.cell.id && p.address === "D7") : field.label === "Lokasi"))?.cell;
+  requireCondition(source, "Lokasi detail proyek Evaluasi Vendor tidak ditemukan.");
+  const targets = fields.filter(field => field.stage === "KONVERSI_JAGAD" && (s.workbook
+    ? s.workbook.cells.some(p => p.cellId === field.cell.id && p.address === (field.cell.scope === "INU" ? "C26" : "C25")) : field.label === "Lokasi"));
+  const targetIds = new Set(targets.map(field => field.cell.id));
+  const mappings = [...s.mappings];
+  for (const { cell } of targets) {
+    requireCondition(cell.scope !== "SHARED", "Lokasi Konversi harus berada dalam profil.");
+    const component = `project-location-live:${source.id}`;
+    const prior = mappings.find(mapping => mapping.targetCellId === cell.id);
+    if (prior?.sourceComponent === component && cell.source.kind === "MAPPING" && cell.source.mappingId === prior.id) continue;
+    if (prior) mappings.splice(mappings.indexOf(prior), 1);
+    const unit = s.workbook ? "1" : "IDR/L";
+    mappings.push({ id: prior?.id ?? id<"mapping">(), versionId: id<"mapping-version">(), analysisId: s.analysisId, scope: cell.scope,
+      sourceCellId: source.id, targetCellId: cell.id, sourceComponent: component, sourceUnit: unit, targetUnit: unit,
+      transformExpression: null, status: "ACTIVE", provenance: { actorId, changeEventId: id<"change-event">(), sourceRef: null, reason: "Lokasi mengikuti detail proyek Evaluasi Vendor" } });
+  }
+  const formulas = s.formulas.filter(formula => !targetIds.has(formula.targetCellId));
+  const retained = new Set(formulas.map(formula => formula.id));
+  return changeWorkbook(s, { mappings, formulas,
+    profiles: { INU: { ...s.profiles.INU, formulaIds: s.profiles.INU.formulaIds.filter(id => retained.has(id)) },
+      SOLAR_BAWAH: { ...s.profiles.SOLAR_BAWAH, formulaIds: s.profiles.SOLAR_BAWAH.formulaIds.filter(id => retained.has(id)) } },
+    worksheets: s.worksheets.map(w => ({ ...w, tables: w.tables.map(t => ({ ...t, cells: t.cells.map(cell => targetIds.has(cell.id)
+      ? { ...cell, source: { kind: "MAPPING" as const, mappingId: mappings.find(mapping => mapping.targetCellId === cell.id)!.id } } : cell) })) })) });
 }
 
 export function changeSheetProfile(s: WorkbookSnapshot, profile: typeof PROFILES[number]) {

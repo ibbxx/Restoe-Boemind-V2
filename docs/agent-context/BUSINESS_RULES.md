@@ -2,6 +2,8 @@
 
 ## Terkonfirmasi
 
+- Keputusan pengguna terbaru 2026-10-18: Konversi mengikuti uraian dan nilai terkini vendor yang dipilih secara langsung setelah input dikonfirmasi. Pemilihan vendor tetap manual; revisi lama vendor tidak lagi mengunci sumber Konversi. Komponen tambahan ikut disalin. Draft hanya mempertahankan data vendor terkini, kecuali referensi internal yang diperlukan run/konteks historis workbook. Snapshot tersimpan tetap immutable. Keputusan ini menggantikan aturan sebelumnya tentang mempertahankan revisi vendor terpilih saat sel vendor diedit.
+
 - Keputusan pengguna 2026-10-18: kolom Harga INU/Solar Konversi menyalin Harga Dasar, PPN, PBBKB, PPH, OAT, PPN OAT, BPH, dan TOTAL/ALL IN dari revisi Evaluasi Vendor yang dipilih, tanpa menghitung ulang komponen sumber memakai tarif Konversi. Sel kosong pada revisi pilihan menghasilkan WAITING_INPUT. Kolom Biaya, solver INU, dan hubungan HPP AHS tetap mengikuti profil masing-masing. Pemilihan revisi tetap manual.
 
 - Workspace/analysis memiliki batas yang jelas dalam Project; beberapa Analysis dalam satu Project harus dapat memiliki state dan histori independen.

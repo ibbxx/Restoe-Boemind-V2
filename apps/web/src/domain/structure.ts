@@ -227,7 +227,7 @@ export function setCellFormula(snapshot: unknown, cellId: unknown, expression: s
   requireCondition(!s.workbook?.bindings.some(b => b.cellId === target && ["cost", "supplier", "supplierName"].includes(b.key)), "Sel ini dikelola pilihan vendor atau solver.");
   requireCondition(!PROFILES.some(profile => s.profiles[profile].hppBase.cellId === target), "HPP mengikuti Biaya Konversi.");
   requireCondition(!s.mappings.some(m => m.targetCellId === target), "Target mapping tidak boleh ditimpa formula.");
-  requireCondition(!s.mappings.some(m => m.sourceCellId === target && !(vendorCell && m.sourceComponent.startsWith("offer-revision:"))), "Sel sumber mapping tidak boleh diubah menjadi formula.");
+  requireCondition(!s.mappings.some(m => m.sourceCellId === target && !(vendorCell && (m.sourceComponent.startsWith("offer-revision:") || m.sourceComponent.startsWith("vendor-live:") || m.sourceComponent.startsWith("project-location-live:")))), "Sel sumber mapping tidak boleh diubah menjadi formula.");
   const referenceCellIds = [...new Set(references(parseFormula(expression), () => {
     throw new TypeError("Gunakan referensi sel langsung.");
   }))] as StableId<"cell">[];
@@ -267,7 +267,7 @@ export function clearCellSource(snapshot: unknown, cellId: unknown) {
   requireCondition(vendorCell || !s.workbook?.cells.some(p => p.cellId === target && p.kind === "LABEL"), "Sel label tidak boleh dikosongkan.");
   requireCondition(!s.workbook?.bindings.some(b => b.cellId === target && ["cost", "supplier", "supplierName"].includes(b.key)), "Sel ini dikelola pilihan vendor atau solver.");
   requireCondition(!PROFILES.some(profile => s.profiles[profile].hppBase.cellId === target), "HPP mengikuti Biaya Konversi.");
-  requireCondition(!s.mappings.some(m => m.targetCellId === target || (m.sourceCellId === target && !(vendorCell && m.sourceComponent.startsWith("offer-revision:")))),
+  requireCondition(!s.mappings.some(m => m.targetCellId === target || (m.sourceCellId === target && !(vendorCell && (m.sourceComponent.startsWith("offer-revision:") || m.sourceComponent.startsWith("vendor-live:") || m.sourceComponent.startsWith("project-location-live:"))))),
     "Sel masih milik mapping; lepaskan mapping-nya lebih dulu.");
   const clearedFormulaId = cell.source.kind === "FORMULA" ? cell.source.formulaId : null;
   const formulas = clearedFormulaId ? s.formulas.filter(f => f.id !== clearedFormulaId) : s.formulas;

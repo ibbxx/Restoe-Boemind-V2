@@ -56,7 +56,7 @@ export function ProcurementWorkspace() {
     const inventory = (value: WorkbookSnapshot) => value.worksheets.flatMap(w => w.tables.flatMap(t => t.cells.map(c => c.id))).sort().join(",");
     const matching = matchingRuns.findLast(r => r.snapshotId === sourceId) ?? matchingRuns.findLast(r => inventory(r.manifest.snapshot) === inventory(s));
     let config = s.workbook ? s.workbook.configuration : legacyConfiguration(s, matching?.manifest.configuration ?? null);
-    s = recordVendorRevisions(s, config, revisions.map(r => r.revision.snapshot));
+    s = recordVendorRevisions(s, config);
     const mappingActor = actor ?? lastActor.current;
     if (mappingActor) s = prepareSelectedVendorMappings(s, mappingActor);
     config = s.workbook ? s.workbook.configuration : legacyConfiguration(s, config);
@@ -124,9 +124,10 @@ export function ProcurementWorkspace() {
 
   function edit(s: WorkbookSnapshot, config = s.workbook ? s.workbook.configuration : configuration) {
     s = prepareNumericBlanks(makeAhsSaleInput(connectAhsHpp(prepareLegacySheet(prepareVendorColumns(s)))));
+    config = s.workbook ? s.workbook.configuration : legacyConfiguration(s, config);
+    s = recordVendorRevisions(s, config);
     if (actor) s = prepareSelectedVendorMappings(s, actor);
     config = s.workbook ? s.workbook.configuration : legacyConfiguration(s, config);
-    s = recordVendorRevisions(s, config, history.map(r => r.revision.snapshot));
     snapshotRef.current = s; setSnapshot(s); setConfiguration(config); setDirty(true); pendingSave.current = null; setError(""); setMessage("Draft berubah; belum disimpan.");
   }
   function mutate(action: () => void) { try { action(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Input tidak valid."); } }

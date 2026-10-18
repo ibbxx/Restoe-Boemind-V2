@@ -12,6 +12,8 @@ Serialization, runtime validation, freshness, change summary, dan repository ber
 
 ## UI dan runtime Fase 5
 
+Pembaruan 2026-10-18: mapping `vendor-live:<offerId>:<sourceCellId>` membaca sel aktif Evaluasi Vendor melalui graph, termasuk hasil formula dan error dependensinya. `vendorComponents` menyediakan identitas komponen dan sel uraian bersama bagi renderer Konversi dan pemetaan baris tambahan. `recordVendorRevisions` memperbarui pointer vendor yang sudah dipilih pada kedua profil dan memangkas revisi draft yang tidak diperlukan; referensi run/review historis tetap dipertahankan. Alur load/edit mematerialisasi data vendor terkini terlebih dahulu, kemudian membangun mapping untuk setiap profil yang telah memilih vendor. Uraian dan nilai laporan cetak berasal dari renderer yang sama. Ini menggantikan penjelasan penguncian revisi vendor dalam catatan integrasi lama di bawah.
+
 Input vendor, harga, dan rumus dilakukan langsung di kolom workbook. Form daftar vendor, pembuatan penawaran, dan input komponen revisi terpisah dihapus atas instruksi pengguna 2026-10-17; pilihan revisi manual dan histori tetap tersedia. Pengisian nama vendor pada header menyiapkan sel penawaran pada draft yang sama.
 
 Instruksi pengguna terbaru: pengujian perilaku dilakukan manual oleh pengguna;
