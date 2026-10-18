@@ -40,7 +40,11 @@ export function invalidateReviewContexts(before: WorkbookSnapshot, after: Workbo
       canonicalJson(after.mappings.filter(m => m.targetCellId === id && m.status === "ACTIVE" && afterCells.get(id)?.source.kind === "MAPPING")));
     const formulaChanged = canonicalJson(before.formulas.filter(f => before.profiles[profile].formulaIds.includes(f.id))) !==
       canonicalJson(after.formulas.filter(f => after.profiles[profile].formulaIds.includes(f.id)));
-    if (stillStale || context.selectedOfferRevisionId !== after.selectedOfferRevisionId || offerChanged || mappingChanged || inputChanged || upstreamWriterChanged || formulaChanged ||
+    const selectedRevision = after.workbook ? after.workbook.selections[profile] : after.selectedOfferRevisionId;
+    const configurationChanged = canonicalJson(before.workbook?.configuration?.units.filter(u => watched.has(u.cellId)) ?? null) !==
+      canonicalJson(after.workbook?.configuration?.units.filter(u => watched.has(u.cellId)) ?? null) ||
+      (profile === "INU" && canonicalJson(before.workbook?.solver ?? null) !== canonicalJson(after.workbook?.solver ?? null));
+    if (stillStale || context.selectedOfferRevisionId !== selectedRevision || offerChanged || mappingChanged || inputChanged || upstreamWriterChanged || formulaChanged || configurationChanged ||
       canonicalJson(before.policy) !== canonicalJson(after.policy) ||
       before.profiles[profile].hppBase.contextRunId !== after.profiles[profile].hppBase.contextRunId) {
       profiles[profile] = { ...profiles[profile], reviewContext: { ...context, freshness: "STALE", decisionStatus: "NEEDS_REVIEW" } };

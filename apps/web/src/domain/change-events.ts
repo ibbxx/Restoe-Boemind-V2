@@ -22,7 +22,8 @@ export function describeChanges(before: WorkbookSnapshot | null, after: Workbook
     [...after.analysis.vendors, ...after.analysis.offers, ...after.analysis.offerRevisions]));
   const structure = (s: WorkbookSnapshot | null) => s?.worksheets.map(w => ({ ...w, tables: w.tables.map(t => ({ ...t, cells: [] })) })) ?? [];
   add("STRUCTURE_CHANGED", changedIds(structure(before), structure(after)));
+  if (canonicalJson(before?.workbook?.tables ?? null) !== canonicalJson(after.workbook?.tables ?? null)) add("STRUCTURE_CHANGED", after.workbook?.tables.map(t => t.tableId) ?? []);
   if (!before || canonicalJson([before.project, before.analysis.analysis, before.profiles, before.policy, before.calculationRunRefs]) !==
-    canonicalJson([after.project, after.analysis.analysis, after.profiles, after.policy, after.calculationRunRefs])) add("CONTEXT_CHANGED", [after.analysisId]);
+    canonicalJson([after.project, after.analysis.analysis, after.profiles, after.policy, after.calculationRunRefs]) || canonicalJson(before?.workbook ?? null) !== canonicalJson(after.workbook ?? null)) add("CONTEXT_CHANGED", [after.analysisId]);
   return changes;
 }

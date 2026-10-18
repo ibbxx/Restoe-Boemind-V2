@@ -19,8 +19,8 @@ yang dipakai tes di bawah adalah fixture sintetis eksplisit, bukan tarif/policy 
 
 | Lapisan | Tersambung dan tersedia | Batas/gap |
 |---|---|---|
-| UI `/` | Login, workbook kosong, Project/Analysis terpisah, vendor, offer, komponen revisi/negosiasi, pilihan manual | Belum berupa grid workbook lengkap; tidak ada default angka proyek |
-| Worksheet | Tambah input/formula, edit input/formula, preview otomatis, profil INU/Solar independen | Belum ada impor/default formula workbook, editor agregat, sort/reorder/delete/reset worksheet melalui UI |
+| UI `/` | Worksheet mengikuti gambar pengguna; login, Project/Analysis, penawaran/negosiasi, pilihan manual melalui panel pengaturan | Template visual utama masih memakai slot tetap; bukan seluruhnya renderer template dinamis. Tidak ada default angka proyek |
+| Worksheet | Editor struktur/formula dalam panel samping; tambah tabel/baris/kolom, hapus dengan guard, merge/split, formula per sel, preview otomatis, profil independen | Belum ada impor/default formula workbook, editor agregat, sort/reorder/reset worksheet melalui UI |
 | Mapping | Pengguna memilih komponen revisi, target Konversi dan alasan, meninjau kesamaan satuan, lalu mengaktifkan mapping preview | Hanya pin/copy komponen ke O dan mapping dengan satuan sama; tanpa transformasi bisnis tersirat. Pemilihan revisi lain memerlukan penerapan ulang manual |
 | API `/api/session` | GET validasi, POST LOGIN/REFRESH, DELETE logout melalui REST Auth resmi | Cookie HttpOnly, SameSite=Strict, Secure pada HTTPS; HTTPS/reverse proxy staging belum diuji |
 | API `/api/workbook` | Projects/Analyses/head/history/revision/replay/runs/latest-run; SAVE/RESTORE/CALCULATE | Bearer API lama dipertahankan; sesi cookie ditambahkan dengan guard Origin/Host |
@@ -68,7 +68,7 @@ tidak membaca variabel tersebut.
 
 ## Skenario browser dan hasil aktual
 
-`e2e/procurement.spec.ts` menjalankan empat skenario dengan retry 0 dan tanpa SKIP:
+`e2e/procurement.spec.ts` dan `e2e/worksheet-editor.spec.ts` menjalankan enam skenario dengan retry 0 dan tanpa SKIP:
 
 1. Tiga vendor, masing-masing penawaran/komponen; negosiasi Vendor A menambah revisi
    2 tanpa mengganti pilihan revisi 1. Pengguna mengaktifkan O→S pada IDR/L untuk
@@ -90,11 +90,40 @@ tidak membaca variabel tersebut.
 4. Review run sebagai konteks HPP dicatat; perubahan B membuat NEEDS_REVIEW dan
    HPP tidak berubah. Save/reload mempertahankan konteks. Analysis kedua pada
    Project yang sama tidak mewarisi input Analysis pertama.
+5. Layout referensi: vendor 404 px, konversi 303 px, AHS 606 px; jarak posisi
+   AHS terhadap vendor 505 px dan konversi 486 px di bawah vendor. Warna judul,
+   pendapatan, biaya dan laba diuji, termasuk bobot font header dan perataan
+   uraian. Input HPP langsung → Save → reload tetap 777. Layar 390 px memakai
+   scroll di dalam worksheet; panel editor tidak meluber. Escape menutup panel
+   dan mengembalikan fokus ke tombol pembuka.
+6. Editor menambah baris/kolom pada tabel HPP INU, mempertahankan HPP manual
+   1500. Input sintetis 10 dan formula `input × 2` menghasilkan 20; input 15
+   mengubah hasil menjadi 30. Kolom yang telah diberi metadata satuan dapat
+   dihapus tanpa meninggalkan konfigurasi rusak. Merge 2×2 tersimpan setelah
+   reload; split mengembalikan input dan hasil dengan ID semula. Penghapusan
+   baris terpakai dan siklus formula ditolak. Tambah tabel, Save dan Restore
+   menghasilkan tiga revisi dan dua run tanpa kesalahan JavaScript.
 
-Screenshot desktop/mobile berada di output Playwright
-`apps/web/test-results/procurement-procurement-vi-acd99--user-isolation-and-restart/`.
-Keduanya diperiksa secara visual. Viewport mobile 390×844 juga diperiksa tanpa
-overflow horizontal; ini bukan audit aksesibilitas WCAG lengkap.
+## Penerimaan tampilan dari gambar pengguna
+
+`docs/assets/image.png` dipakai untuk susunan, ukuran, font, border dan warna.
+Nama vendor, nilai, tanggal dan tarif dalam gambar tidak disalin sebagai data
+proyek atau aturan bisnis. Screenshot hasil render diperiksa secara langsung;
+kesamaan layout tidak menyatakan perbandingan pixel seluruh gambar lulus karena
+data fixture dan teksnya berbeda dari sumber.
+
+Worksheet utama memuat vendor di kiri atas, konversi di kiri bawah dan AHS di
+kanan. Area kosong tabel putih; grid latar tidak menembus metadata/notes. Label
+konversi dan perataan uraian mengikuti sumber. Pengaturan serta editor berada
+di panel yang bisa ditutup, sehingga tidak memanjangkan daftar form di bawah
+worksheet. Tabel tambahan mengikuti display order dan merge snapshot.
+
+Screenshot berada di output Playwright: `reference-layout.png` dan
+`editor-mobile.png` pada folder `procurement-reference-imag-94e21-ght-editable-sheet-persists/`,
+serta `structure-editor.png` dan `worksheet-after-edits.png` pada folder
+`worksheet-editor-worksheet-ee579-s-and-restores-by-stable-ID/`. Artefak berada
+di `apps/web/test-results/` dan tidak di-commit. Pemeriksaan viewport dan fokus
+bukan audit aksesibilitas WCAG lengkap.
 
 ## Bug yang diperbaiki dan regresinya
 
@@ -109,6 +138,13 @@ overflow horizontal; ini bukan audit aksesibilitas WCAG lengkap.
 | Tab lama dapat tetap menampilkan workspace setelah pergantian akun | Broadcast sesi menyembunyikan workspace; akun lain membersihkan state lama; browser regression |
 | Logout setelah access cookie hilang belum mencabut sesi refresh | Refresh server-side sebelum logout; unit test dan GoTrue/browser regression |
 | Restore dapat memilih konfigurasi run dari struktur snapshot lain | Pemulihan mengutamakan snapshot sumber Restore dan inventory yang cocok |
+| Editor yang dipulihkan belum terhubung dan kontrak merge belum lengkap | Panel editor memakai command domain; validasi anchor/span/overlap/ID serta backward compatibility; regresi struktur dan browser |
+| Sel input belum ditandai dirty saat sedang diketik | onChange menandai draft; commit nilai tetap melalui command pada blur, Save/reload diuji |
+| Menghapus sel dapat meninggalkan metadata unit atau anggota agregat | Unit yang tidak memiliki sel dibuang; anggota agregat/dependensi pilihan dilindungi; browser menghapus kolom terkonfigurasi lalu Save |
+| Grid sparse melewatkan posisi kosong sehingga kolom bergeser | Posisi kosong berbeda dari sel tertutup merge; regression test grid |
+| Test posisi konversi menemukan selisih 0,5 px | Margin diperbaiki dari hasil render; assertion posisi tetap dipertahankan |
+| Test tinggi AHS menemukan selisih 0,75 px dan dropdown tabel baru sulit dikenali | Tinggi notes disesuaikan dan accessible name eksplisit ditambahkan; assertion tetap dipertahankan |
+| Screenshot memperlihatkan tombol Simpan kehilangan kontras ketika hover | Warna hover tombol utama tetap gelap; assertion CSS dan pemeriksaan screenshot |
 
 Percobaan awal gagal pada sandbox listener, bootstrap Auth lokal (schema migrations,
 search_path, default role), guard Origin dan locator aksesibilitas. Harness/kode
@@ -119,14 +155,15 @@ ditafsirkan sebagai hasil acceptance yang lulus.
 
 | Pemeriksaan | Hasil |
 |---|---|
-| `PATH=/opt/homebrew/opt/postgresql@17/bin:$PATH RUN_POSTGRES_TESTS=1 npm run check` | 244 PASS, 0 FAIL, 0 SKIP, 1 TODO EV-005; lint/typecheck lulus |
+| `PATH=/opt/homebrew/opt/postgresql@17/bin:$PATH RUN_POSTGRES_TESTS=1 npm run check` | 258 PASS, 0 FAIL, 0 SKIP, 1 TODO EV-005; lint/typecheck lulus |
 | `npm run build` | PASS, route `/`, `/api/session`, `/api/workbook` |
-| `PATH=/opt/homebrew/opt/postgresql@17/bin:$PATH npm run test:e2e` | 4 PASS, 0 FAIL, 0 SKIP; production server lokal, Auth dan PostgreSQL nyata |
-| `npm audit --omit=dev --json` | 0 runtime vulnerability pada pemeriksaan ini |
+| `PATH=/opt/homebrew/opt/postgresql@17/bin:$PATH npm run test:e2e` | 6 PASS, 0 FAIL, 0 SKIP pada build terbaru; production server lokal, Auth dan PostgreSQL nyata |
+| `npm audit --omit=dev --json` | Pemeriksaan sebelumnya: 0 runtime vulnerability; tidak diulang pada perubahan UI ini |
 
-`git diff --check`, review perubahan dan whitespace file baru diperiksa terpisah
-karena `apps/` dan `docs/` sudah berstatus untracked sebelum pekerjaan. Penghapusan
-artefak root dan perubahan `.gitignore` yang sudah ada dipertahankan.
+`git diff --check`, review perubahan dan whitespace file baru diperiksa terpisah.
+Perubahan yang dipulihkan setelah sinkronisasi Git dipertahankan; `.env` dan
+database lokal tidak diubah. Suite menggunakan cluster sementara dan tidak
+mengulang audit/migration cloud atau mengubah role/privilege terverifikasi.
 
 **Staging:** kandidat untuk review/UAT preview; belum siap staging operasional atau
 pilot dengan hasil bisnis final. Lingkungan hosting staging, HTTPS/reverse proxy,
@@ -138,9 +175,21 @@ setelah crash, atau audit aksesibilitas lengkap.
 Save dan CALCULATE adalah dua request: snapshot dapat sukses tersimpan sementara
 kalkulasi gagal. Draft/config yang belum disimpan tidak tahan crash/reload; UI
 memberi peringatan navigasi. Tidak ada bug baru yang diketahui tertinggal pada
-empat skenario yang lulus; batas fitur di atas tetap terbuka dan bukan disamarkan
+enam skenario yang diuji; batas fitur di atas tetap terbuka dan bukan disamarkan
 sebagai fitur yang selesai.
 
 Dokumentasi yang digunakan: [Auth REST resmi](https://github.com/supabase/auth/blob/v2.197.0/README.md),
 [rilis Auth resmi](https://github.com/supabase/auth/releases/tag/v2.197.0),
 dan dokumentasi Next yang terpasang di `node_modules/next/dist/docs/`.
+
+## Perbaikan script development React Grab
+
+Pemasangan React Grab pada root layout diubah dari `beforeInteractive` di head
+menjadi `afterInteractive` di body, tetap khusus development. `npm run test:dev-script`
+menguji server development loopback di Chrome: satu script benar-benar dieksekusi
+per dokumen setelah hidrasi, reload tidak menghasilkan warning script/hydration.
+API dan payload CDN diisolasi oleh fixture browser; ini tidak menguji fitur seleksi
+React Grab atau ketersediaan CDN asli. Percobaan verifier pertama salah menunggu
+script terlihat; diperbaiki menjadi menunggu elemen terpasang, lalu lulus.
+Typecheck/lint dan build production lulus. Build memakai salinan sementara tanpa
+`.env` agar tidak menimpa cache/server development aktif; tidak ada deploy.

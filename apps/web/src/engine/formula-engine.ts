@@ -8,8 +8,9 @@ import type { CalculationEngine, EngineConfiguration, EngineRun, NodeResult } fr
 import { DecimalArithmetic } from "./decimal.ts";
 import { evaluateNode } from "./evaluator.ts";
 import { affectedNodes, assertConfigurationVersions, captureConfiguration, compileGraph, relevantNodes } from "./graph.ts";
+import { operationalGraph } from "./inu-solver.ts";
 
-export const ENGINE_VERSION = "phase3-grammar1-fixed-decimal1";
+export const ENGINE_VERSION = "phase3-grammar2-fixed-decimal2-provisional";
 const issuedRuns = new WeakSet<EngineRun>();
 
 export class FormulaEngine implements CalculationEngine {
@@ -33,7 +34,7 @@ export class FormulaEngine implements CalculationEngine {
   #calculate(value: WorkbookSnapshot, revisionId: EngineRun["manifest"]["revisionId"], previous?: EngineRun): EngineRun {
     const snapshot = captureSnapshot(value);
     const configuration = this.configuration;
-    const graph = compileGraph(snapshot, configuration);
+    const { graph, solver } = operationalGraph(snapshot, configuration, previous);
     if (previous && issuedRuns.has(previous)) assertConfigurationVersions(previous.manifest.configuration, configuration);
     let affected: ReadonlySet<string> = new Set(graph.nodes.keys());
     const results = new Map<string, NodeResult>();
@@ -42,7 +43,7 @@ export class FormulaEngine implements CalculationEngine {
       previous.manifest.snapshot.projectId === snapshot.projectId &&
       previous.manifest.configuration.policyVersionId === configuration.policyVersionId &&
       canonicalJson(previous.manifest.configuration.decimal) === canonicalJson(configuration.decimal)) {
-      affected = affectedNodes(compileGraph(previous.manifest.snapshot, previous.manifest.configuration), graph);
+      affected = affectedNodes(operationalGraph(previous.manifest.snapshot, previous.manifest.configuration).graph, graph);
       previous.results.forEach(r => { if (graph.nodes.has(r.cellId) && !affected.has(r.cellId)) results.set(r.cellId, r); });
     }
     const decimal = new DecimalArithmetic(configuration.decimal);
@@ -60,16 +61,39 @@ export class FormulaEngine implements CalculationEngine {
       evaluatedCellIds.push(id);
     }
     const ordered = [...results.values()].sort((a, b) => a.cellId.localeCompare(b.cellId));
+    const provisionalResults = new Map<string, NodeResult>();
+    const assumptions = new Map<string, readonly string[]>();
+    const numericCells = new Set<string>(snapshot.workbook?.cells.filter(c => c.unit !== "text").map(c => c.cellId));
+    graph.nodes.forEach(n => {
+      if (n.error?.code === "CIRCULAR_DEPENDENCY") provisionalResults.set(n.cell.id,
+        { cellId: n.cell.id, writer: n.writer, dependencies: n.dependencies, ...n.error });
+    });
+    for (const id of graph.order) {
+      const node = graph.nodes.get(id)!;
+      const source = node.pinnedInput ?? (node.cell.source.kind === "INPUT" ? node.cell.source.input : null);
+      const assumeZero = source?.kind === "UNSET" && (snapshot.workbook ? numericCells.has(id) : node.unit !== null);
+      const result = evaluateNode(node, provisionalResults, decimal, aggregates, assumeZero,
+        new Set(node.dependencies.filter(dep => assumptions.get(dep)?.length)));
+      provisionalResults.set(id, result);
+      assumptions.set(id, result.status === "VALUE" || result.status === "ZERO"
+        ? [...new Set([...(assumeZero && result.status === "ZERO" ? [id] : []),
+          ...node.dependencies.flatMap(dep => assumptions.get(dep) ?? [])])].sort() : []);
+    }
+    const provisionalOrdered = [...provisionalResults.values()].sort((a, b) => a.cellId.localeCompare(b.cellId));
     const policyMatches = snapshot.policy.status === "CONFIGURED" && snapshot.policy.versionId === configuration.policyVersionId;
     const relevant = relevantNodes(snapshot, graph);
     const errors = ordered.filter(r => relevant.has(r.cellId) && !["VALUE", "ZERO", "TEXT"].includes(r.status));
     const run: EngineRun = freeze({
+      ...(solver ? { solver } : {}),
       id: createStableId<"run">(), snapshotId: snapshot.id, engineVersion: this.version,
       policyVersionId: policyMatches ? configuration.policyVersionId : null, status: errors.length ? "ERROR" : "NONFINAL",
       diagnostics: [...(policyMatches ? [] : ["POLICY_UNCONFIGURED_OR_MISMATCH"]),
         "BUSINESS_VALIDATION_REQUIRED", ...(revisionId === null ? ["UNSAVED_PREVIEW"] : []),
       ...errors.map(r => r.cellId + ":" + ("code" in r ? r.code : r.status))],
       results: ordered, evaluatedCellIds,
+      provisional: { status: provisionalOrdered.some(r => relevant.has(r.cellId) && !["VALUE", "ZERO", "TEXT"].includes(r.status)) ? "ERROR" : "NONFINAL",
+        results: provisionalOrdered, assumedZeroCellIds: [...new Set([...assumptions.values()].flat())].sort(),
+        assumptionsByCellId: Object.fromEntries(assumptions) },
       manifest: { revisionId, snapshot, configuration, signatures: Object.fromEntries([...graph.nodes].map(([id, n]) => [id, n.signature])) }
     });
     issuedRuns.add(run);
@@ -81,8 +105,8 @@ export class FormulaEngine implements CalculationEngine {
     const snapshot = captureSnapshot(value);
     requireCondition(run.manifest.snapshot.analysisId === snapshot.analysisId && run.manifest.snapshot.projectId === snapshot.projectId,
       "Run belongs to another analysis/project.");
-    const prior = compileGraph(run.manifest.snapshot, run.manifest.configuration);
-    const next = compileGraph(snapshot, this.configuration);
+    const prior = operationalGraph(run.manifest.snapshot, run.manifest.configuration).graph;
+    const next = operationalGraph(snapshot, this.configuration).graph;
     const affected = new Set(affectedNodes(prior, next));
     if (run.engineVersion !== this.version || canonicalJson(run.manifest.configuration.decimal) !== canonicalJson(this.configuration.decimal) ||
       run.manifest.configuration.policyVersionId !== this.configuration.policyVersionId ||

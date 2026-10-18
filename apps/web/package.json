@@ -12,12 +12,7 @@
     "start": "NODE_EXTRA_CA_CERTS=./certs/supabase-prod-ca-2021.crt next start",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "next typegen && tsc --noEmit",
-    "test": "npm run typecheck && node --experimental-strip-types --test tests/*.test.ts",
-    "test:watch": "node --experimental-strip-types --test --watch tests/*.test.ts",
-    "test:e2e": "playwright test",
-    "test:postgres": "npm run typecheck && RUN_POSTGRES_TESTS=1 node --experimental-strip-types --test tests/phase4-postgres.test.ts",
-    "test:supabase": "NODE_EXTRA_CA_CERTS=./certs/supabase-prod-ca-2021.crt node --env-file=.env --experimental-strip-types tests/verify-supabase-cloud.ts",
-    "check": "npm run lint && npm test"
+    "check": "npm run lint && npm run typecheck"
   },
   "dependencies": {
     "next": "16.4.0",
@@ -26,12 +21,12 @@
     "react-dom": "19.3.0"
   },
   "devDependencies": {
-    "@playwright/test": "1.64.1",
     "@types/node": "22.20.5",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "eslint": "9.39.5",
     "eslint-config-next": "16.4.0",
+    "react-grab": "^0.2.0",
     "typescript": "6.0.3"
   },
   "overrides": {

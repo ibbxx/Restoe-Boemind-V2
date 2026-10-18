@@ -2,6 +2,7 @@ import type { CellInput, MappingVersion, ProfileSnapshot, ReviewContext, Workboo
 import { parseStableId } from "./ids.ts";
 import type { EntityKind } from "./ids.ts";
 import { parseProfile, PROFILES } from "./profiles.ts";
+import { parseDynamicWorkbook, validateDynamicReferences } from "./dynamic-validation.ts";
 
 export class DomainValidationError extends TypeError {
   readonly code = "INVALID_DOMAIN_STATE";
@@ -50,7 +51,7 @@ export function parseCellInput(value: unknown): CellInput {
 function parseProfileState(value: unknown): ProfileSnapshot {
   const p = object(value, ["hppBase", "cellIds", "formulaIds", "reviewContext"]);
   const h = object(p.hppBase, ["origin", "cellId", "contextRunId"]);
-  return { hppBase: { origin: choice(h.origin, ["MANUAL"]), cellId: parseStableId<"cell">(h.cellId),
+  return { hppBase: { origin: choice(h.origin, ["MANUAL", "CONVERSION_COST"]), cellId: parseStableId<"cell">(h.cellId),
     contextRunId: nullableId<"run">(h.contextRunId) },
     cellIds: array(p.cellIds).map(id => parseStableId<"cell">(id)),
     formulaIds: array(p.formulaIds).map(id => parseStableId<"formula">(id)),
@@ -83,9 +84,10 @@ export function parseMappingVersion(value: unknown): MappingVersion {
 
 // Structural validation only: raw numeric text and expressions have no arithmetic policy here.
 export function parseSnapshot(value: unknown): WorkbookSnapshot {
+  const version = (value as { schemaVersion?: unknown } | null)?.schemaVersion;
   const root = object(value, ["schemaVersion", "id", "projectId", "project", "analysisId", "analysis", "mappings", "selectedOfferRevisionId",
-    "activeProfile", "profiles", "worksheets", "formulas", "policy", "calculationRunRefs"]);
-  requireCondition(root.schemaVersion === 2, "Unsupported snapshot schema version; legacy ownership must be migrated explicitly.");
+    "activeProfile", "profiles", "worksheets", "formulas", "policy", "calculationRunRefs", ...(version === 3 ? ["workbook"] : [])]);
+  requireCondition(version === 2 || version === 3, "Unsupported snapshot schema version; legacy ownership must be migrated explicitly.");
   const state = object(root.analysis, ["analysis", "vendors", "offers", "offerRevisions"]);
   const analysis = object(state.analysis, ["id", "projectId", "name"]);
   const project = object(root.project, ["id", "name"]);
@@ -94,7 +96,8 @@ export function parseSnapshot(value: unknown): WorkbookSnapshot {
     ? ["status", "versionId"] : ["status"]);
   const policyStatus = choice(policyObject.status, ["CONFIGURED", "UNCONFIGURED"]);
   const snapshot: WorkbookSnapshot = {
-    schemaVersion: 2,
+    schemaVersion: version,
+    ...(version === 3 ? { workbook: parseDynamicWorkbook(root.workbook) } : {}),
     id: parseStableId<"snapshot">(root.id),
     projectId: parseStableId<"project">(root.projectId),
     project: { id: parseStableId<"project">(project.id), name: text(project.name, true) },
@@ -129,7 +132,27 @@ export function parseSnapshot(value: unknown): WorkbookSnapshot {
       const w = object(value, ["id", "stage", "label", "tables"]);
       return { id: parseStableId<"worksheet">(w.id), stage: choice(w.stage, ["EVALUASI_VENDOR", "KONVERSI_JAGAD", "AHS"]),
         label: text(w.label), tables: array(w.tables).map(value => {
-          const t = object(value, ["id", "rows", "columns", "rowOrder", "columnOrder", "cells"]);
+          requireCondition(value !== null && typeof value === "object", "Expected a table object.");
+          const hasMerges = Object.hasOwn(value, "merges");
+          const t = object(value, hasMerges ? ["id", "rows", "columns", "rowOrder", "columnOrder", "cells", "merges"] : ["id", "rows", "columns", "rowOrder", "columnOrder", "cells"]);
+          const rawCells = array(t.cells) as Record<string, unknown>[];
+          const rawMerges = array(hasMerges ? t.merges : []) as Record<string, unknown>[];
+          const rowIds = array(t.rowOrder).map(id => parseStableId<"row">(id));
+          const columnIds = array(t.columnOrder).map(id => parseStableId<"column">(id));
+          const cellById = new Map(rawCells.map(c => [String(c.id), c]));
+          const mergeBoxes = rawMerges.map(value => {
+            const m = object(value, ["id", "anchorCellId", "rowSpan", "colSpan"]);
+            const anchor = cellById.get(String(m.anchorCellId));
+            requireCondition(anchor, "Merge anchor tidak ditemukan pada tabel.");
+            const row = rowIds.indexOf(parseStableId<"row">(anchor.rowId));
+            const column = columnIds.indexOf(parseStableId<"column">(anchor.columnId));
+            requireCondition(row >= 0 && column >= 0 && Number.isInteger(m.rowSpan) && Number(m.rowSpan) >= 1 && Number.isInteger(m.colSpan) && Number(m.colSpan) >= 1 && row + Number(m.rowSpan) <= rowIds.length && column + Number(m.colSpan) <= columnIds.length, "Merge span keluar dari tabel.");
+            return { row, column, rowSpan: Number(m.rowSpan), colSpan: Number(m.colSpan) };
+          });
+          for (let i = 0; i < mergeBoxes.length; i++) for (let j = i + 1; j < mergeBoxes.length; j++) {
+            const a = mergeBoxes[i]!, b = mergeBoxes[j]!;
+            requireCondition(a.row + a.rowSpan <= b.row || b.row + b.rowSpan <= a.row || a.column + a.colSpan <= b.column || b.column + b.colSpan <= a.column, "Merge tabel tidak boleh bertumpuk.");
+          }
           return { id: parseStableId<"table">(t.id), rows: array(t.rows).map(value => {
             const r = object(value, ["id", "label"]);
             return { id: parseStableId<"row">(r.id), label: text(r.label) };
@@ -150,6 +173,10 @@ export function parseSnapshot(value: unknown): WorkbookSnapshot {
                 ? { kind, input: parseCellInput(s.input) } : kind === "FORMULA"
                   ? { kind, formulaId: parseStableId<"formula">(s.formulaId) }
                   : { kind, mappingId: parseStableId<"mapping">(s.mappingId) } };
+          }), merges: rawMerges.map(value => {
+            const m = object(value, ["id", "anchorCellId", "rowSpan", "colSpan"]);
+            requireCondition(Number.isInteger(m.rowSpan) && Number(m.rowSpan) >= 1 && Number.isInteger(m.colSpan) && Number(m.colSpan) >= 1, "Invalid table merge span.");
+            return { id: parseStableId<"merge">(m.id), anchorCellId: parseStableId<"cell">(m.anchorCellId), rowSpan: Number(m.rowSpan), colSpan: Number(m.colSpan) };
           }) };
         }) };
     }),
@@ -175,6 +202,7 @@ export function parseSnapshot(value: unknown): WorkbookSnapshot {
     }),
   };
   validateReferences(snapshot);
+  validateDynamicReferences(snapshot);
   return snapshot;
 }
 
@@ -194,7 +222,7 @@ function validateReferences(s: WorkbookSnapshot) {
   const cells = tables.flatMap(t => t.cells);
   const allIds: readonly string[] = [s.id, s.project.id, s.analysisId, ...p.vendors.map(v => v.id), ...p.offers.map(o => o.id),
     ...p.offerRevisions.flatMap(r => [r.id, ...r.values.map(v => v.id)]),
-    ...s.worksheets.map(w => w.id), ...tables.flatMap(t => [t.id, ...t.rows.map(r => r.id), ...t.columns.map(c => c.id)]),
+    ...s.worksheets.map(w => w.id), ...tables.flatMap(t => [t.id, ...t.rows.map(r => r.id), ...t.columns.map(c => c.id), ...t.merges.map(m => m.id)]),
     ...cells.map(c => c.id), ...s.formulas.flatMap(f => [f.id, f.versionId]), ...s.calculationRunRefs.map(r => r.id),
     ...s.mappings.flatMap(m => [m.id, m.versionId])];
   unique(allIds, "entity inventory");
@@ -219,7 +247,7 @@ function validateReferences(s: WorkbookSnapshot) {
     const target = byCell.get(m.targetCellId);
     requireCondition(m.analysisId === s.analysisId && source && target &&
       target.scope === m.scope && (source.scope === "SHARED" || source.scope === m.scope), "Invalid mapping reference or scope.");
-    requireCondition(!Object.values(s.profiles).some(p => p.hppBase.cellId === m.targetCellId), "Mapping cannot write manual HPP.");
+    requireCondition(!Object.values(s.profiles).some(p => p.hppBase.cellId === m.targetCellId), "Mapping cannot replace the AHS HPP source.");
   }
   requireCondition(s.policy.status !== "CONFIGURED" || !allIds.includes(s.policy.versionId), "Policy ID is another entity kind.");
   const byFormula = new Map(s.formulas.map(f => [f.id, f]));
@@ -246,8 +274,17 @@ function validateReferences(s: WorkbookSnapshot) {
     sameMembers(state.cellIds, cells.filter(c => c.scope === profile).map(c => c.id), profile + " cells");
     sameMembers(state.formulaIds, s.formulas.filter(f => byCell.get(f.targetCellId)?.scope === profile).map(f => f.id), profile + " formulas");
     const hpp = byCell.get(state.hppBase.cellId);
-    requireCondition(hpp?.scope === profile && hpp.source.kind === "INPUT", "HPP must be a manual input in its own profile.");
+    requireCondition(hpp?.scope === profile && hpp.source.kind === (state.hppBase.origin === "MANUAL" ? "INPUT" : "FORMULA"),
+      "HPP writer does not match its source.");
     requireCondition(s.worksheets.some(w => w.stage === "AHS" && w.tables.some(t => t.cells.some(c => c.id === hpp.id))), "HPP must belong to AHS.");
+    if (state.hppBase.origin === "CONVERSION_COST" && hpp.source.kind === "FORMULA") {
+      const costId = s.workbook?.bindings.find(b => b.profile === profile && b.key === "cost")?.cellId ??
+        s.worksheets.find(w => w.stage === "KONVERSI_JAGAD")?.tables.flatMap(t => t.cells.filter(c => c.scope === profile &&
+          t.rows.some(r => r.id === c.rowId && r.label === "Biaya · Harga Dasar"))).at(0)?.id;
+      const formula = byFormula.get(hpp.source.formulaId);
+      requireCondition(costId && formula?.expression === `@{${costId}}` && formula.referenceCellIds.length === 1 &&
+        formula.referenceCellIds[0] === costId, "HPP must follow the conversion cost for its own profile.");
+    }
     const context = state.hppBase.contextRunId;
     requireCondition(context === null || s.calculationRunRefs.some(r => r.id === context && r.profile === profile), "Invalid HPP run context.");
     const review = state.reviewContext;
@@ -263,7 +300,7 @@ function validateReferences(s: WorkbookSnapshot) {
       requireCondition(review.runId === null || s.calculationRunRefs.some(r => r.id === review.runId && r.profile === profile), "Invalid reviewed run.");
       requireCondition(review.freshness !== "STALE" || review.decisionStatus === "NEEDS_REVIEW", "Stale context requires review.");
       if (review.freshness === "CURRENT") {
-        requireCondition(review.selectedOfferRevisionId === s.selectedOfferRevisionId, "Current review selection mismatch.");
+        requireCondition(review.selectedOfferRevisionId === (s.workbook ? s.workbook.selections[profile] : s.selectedOfferRevisionId), "Current review selection mismatch.");
         review.mappingVersionIds.forEach(id => requireCondition(s.mappings.some(m => m.versionId === id &&
           (m.scope === profile || m.scope === "SHARED")), "Invalid current review mapping."));
       }

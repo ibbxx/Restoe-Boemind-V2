@@ -2,6 +2,7 @@ import { parseStableId } from "../domain/ids.ts";
 
 export type Ast =
   | { readonly kind: "number"; readonly text: string }
+  | { readonly kind: "text"; readonly text: string }
   | { readonly kind: "reference"; readonly id: string }
   | { readonly kind: "aggregate"; readonly id: string }
   | { readonly kind: "unary"; readonly operator: "+" | "-" | "%"; readonly operand: Ast }
@@ -16,7 +17,7 @@ export class FormulaSyntaxError extends SyntaxError {
 export function parseFormula(expression: string): Ast {
   if (typeof expression !== "string" || expression.length > 16384) throw new FormulaSyntaxError("Formula length limit.");
   const tokens: string[] = [];
-  const lexer = /\s*(SUM|[@#]\{[0-9a-fA-F-]+\}|(?:\d+(?:\.\d*)?|\.\d+)|[()+*/%,\-])/y;
+  const lexer = /\s*("(?:[^"]|"")*"|SUM|[@#]\{[0-9a-fA-F-]+\}|(?:\d+(?:\.\d*)?|\.\d+)|[()+*/%,\-])/y;
   let offset = 0;
   while (offset < expression.length && expression.slice(offset).trim()) {
     lexer.lastIndex = offset;
@@ -47,7 +48,8 @@ export function parseFormula(expression: string): Ast {
       try { id = parseStableId<"cell">(token.slice(2, -1)); }
       catch { throw new FormulaSyntaxError("Reference must be a stable UUID v4."); }
       result = { kind: token[0] === "@" ? "reference" : "aggregate", id };
-    } else if (token && /^(?:\d+(?:\.\d*)?|\.\d+)$/.test(token)) result = { kind: "number", text: token };
+    } else if (token?.startsWith('"')) result = { kind: "text", text: token.slice(1, -1).replaceAll('""', '"') };
+    else if (token && /^(?:\d+(?:\.\d*)?|\.\d+)$/.test(token)) result = { kind: "number", text: token };
     else throw new FormulaSyntaxError("Expected literal, reference or SUM.");
     if (tokens[index] === "%") { take(); result = { kind: "unary", operator: "%", operand: result }; }
     depth--;
@@ -71,7 +73,7 @@ export function parseFormula(expression: string): Ast {
 
 export function references(ast: Ast, aggregate: (id: string) => readonly string[]): readonly string[] {
   switch (ast.kind) {
-    case "number": return [];
+    case "number": case "text": return [];
     case "reference": return [ast.id];
     case "aggregate": return aggregate(ast.id);
     case "unary": return references(ast.operand, aggregate);

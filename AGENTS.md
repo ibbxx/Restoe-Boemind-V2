@@ -11,7 +11,7 @@ Bedakan fakta kode/artefak, keputusan pengguna/PRD yang terkonfirmasi, dan keput
 
 ## Invariant wajib
 
-Pertahankan pemilihan offer/revisi manual, Analysis dan Project yang tidak dicampur tanpa keputusan, profil INU dan Solar Bawah independen, HPP AHS manual tanpa auto-binding, stable ID, snapshot historis immutable, restore sebagai revisi baru, penolakan stale revision tanpa overwrite/merge, serta tidak ada auto-award atau compliance gate.
+Pertahankan pemilihan offer/revisi manual, Analysis dan Project yang tidak dicampur tanpa keputusan, profil INU dan Solar Bawah independen, HPP Harga Dasar AHS mengikuti Biaya Harga Dasar Konversi profilnya, Harga Jual AHS manual, stable ID, snapshot historis immutable, restore sebagai revisi baru, penolakan stale revision tanpa overwrite/merge, serta tidak ada auto-award atau compliance gate.
 
 ## Batas fase
 
@@ -21,4 +21,6 @@ Perubahan dokumentasi boleh berada di `docs/agent-context/` dan root `AGENTS.md`
 
 ## Verifikasi
 
-Untuk perubahan yang diizinkan, periksa diff, `git diff --check`, status git, dan tes/lint/typecheck/build yang relevan. Jangan mengklaim perintah lulus jika belum dijalankan.
+Pengguna meminta pengujian aplikasi dilakukan manual oleh pengguna. Jangan membuat atau menjalankan script test, fixture, test runner, atau pengujian browser otomatis. Script pengujian dihapus atas instruksi pengguna. Periksa diff, `git diff --check`, dan status git; jangan mengklaim pengujian lulus jika tidak dijalankan.
+
+UI tetap mengikuti acuan Stitch. Klik sel menampilkan alamat dan formula berukuran normal di formula bar seperti Excel; jangan menaruh label kode kecil di dalam setiap sel. Semua sel Evaluasi Vendor dapat diisi nilai atau rumus pengguna, termasuk Harga Dasar, nama vendor, PPH, label, metadata, total, dan catatan (instruksi terbaru pengguna). PPH tetap kosong/manual pada template awal, tetapi rumus yang dimasukkan pengguna tidak boleh dihapus otomatis. HPP Harga Dasar mengikuti Biaya Konversi, Harga Jual · Harga Dasar AHS diisi manual oleh tim, dan Harga Jual Setelah Pajak dihitung otomatis.

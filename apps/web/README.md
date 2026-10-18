@@ -12,11 +12,9 @@ atau deployment. Bukti dan gap acceptance: [Fase 5](../../docs/agent-context/PHA
 
 Gunakan Node.js 22.12+ dalam major 22; environment verifikasi: 22.23.3.
 
-Simpan konfigurasi lokal di `apps/web/.env` (diabaikan Git). Script `dev`, `start`,
-dan `test:supabase` memuat CA publik Supabase dari
+Simpan konfigurasi lokal di `apps/web/.env` (diabaikan Git). Script `dev` dan `start` memuat CA publik Supabase dari
 `certs/supabase-prod-ca-2021.crt` sebelum Node dimulai, dengan verifikasi TLS tetap
 aktif. Sumber CA: [unduhan resmi Supabase](https://supabase-downloads.s3-ap-southeast-1.amazonaws.com/prod/ssl/prod-ca-2021.crt).
-Jalankan `npm run test:supabase` untuk pemeriksaan cloud read-only.
 
 ```sh
 cd apps/web
@@ -32,9 +30,7 @@ npm run build
 npm start
 ```
 
-`check` menjalankan lint lalu `test`, yang mencakup route type generation,
-TypeScript dan unit tests dengan `node:test`. `npm test` berjalan sekali.
-`test:watch` hanya runtime tests; jalankan `typecheck` saat mengubah kontrak tipe.
+`check` menjalankan lint dan TypeScript. Seluruh script, fixture, dan runner pengujian otomatis sudah dihapus atas instruksi pengguna; pengujian aplikasi dilakukan manual oleh pengguna.
 Build menggunakan Webpack agar pemeriksaan produksi tidak membutuhkan
 proses build Turbopack yang membuka listener tambahan pada environment terbatas.
 Dev tetap menggunakan Turbopack, dengan root aplikasi eksplisit.
@@ -45,7 +41,7 @@ Dev tetap menggunakan Turbopack, dengan root aplikasi eksplisit.
 - `src/domain/commands.ts`: vendor/offer per analysis, append dan pilihan revisi manual,
   edit input sesuai scope, switch profil dan reorder tanpa mengganti identitas.
 - `src/domain/validation.ts`: parsing runtime schema v2, ID unik, ownership/referensi,
-  membership, scope profil dan HPP manual di AHS. Field tak dikenal ditolak.
+  membership, scope profil dan sumber HPP di AHS. Field tak dikenal ditolak.
 - `src/domain/snapshots.ts`: capture terpisah dari draft, deep freeze, JSON canonical,
   draft dan proposed preview yang belum dievaluasi.
 - `src/engine`: parser/AST, evaluator BigInt decimal, unit algebra, graph/SCC,
@@ -58,11 +54,10 @@ Dev tetap menggunakan Turbopack, dengan root aplikasi eksplisit.
 - `src/app/api/session`: login/refresh/logout Auth REST resmi; cookie HttpOnly.
 - `src/ui`: workflow dan presentasi; preview menggunakan FormulaEngine, tanpa aritmetika bisnis React.
 - `src/app`: Next.js App Router, layout dan halaman workspace.
-- `tests`: runtime boundary checks, assertion tipe melalui typecheck, guard hash sumber.
 
 Snapshot diparse menjadi objek baru dan dibekukan secara rekursif; perubahan draft
 tidak memutasi histori. JSON mengurutkan key objek dan mempertahankan urutan array
-historis/display. Schema selain v2 ditolak; migrasi v1 memerlukan identitas Analysis
+historis/display. Schema v2 dan v3 diterima; migrasi v1 memerlukan identitas Analysis
 yang eksplisit dan tidak ditebak dari Project. Adapter PostgreSQL menyimpan envelope
 yang sama secara atomik; migration dan konfigurasi remote tidak dijalankan otomatis.
 Runtime tests membuktikan isolasi mutasi profil, reorder, snapshot immutable,
@@ -73,8 +68,10 @@ Fase 5 memakai stack lokal sementara dan tidak mengulang audit cloud.
 Valid UUID tidak membuktikan bahwa entitas ada atau pengguna berwenang.
 `NUMERIC_TEXT` adalah input mentah, bukan nilai desimal tervalidasi. Format tampilan
 tidak berada di engine; evaluated value terpisah dari input dan formula.
-HPP menunjuk cell INPUT manual di AHS pada profilnya sendiri; nilai mentah hanya
-disimpan pada cell. Context run harus ada pada daftar referensi dan sesuai profil.
+HPP menunjuk formula AHS yang mengambil Biaya Harga Dasar dari Konversi profilnya;
+Harga Jual AHS tetap INPUT manual. Snapshot lama dengan HPP manual dinormalisasi
+ketika dibuka sebagai draft baru; histori revisi lama tidak diubah. Context run
+harus ada pada daftar referensi dan sesuai profil.
 Reference run memuat snapshot/selection/policy/engine historis; metadata itu bukan
 bukti aritmetika. Save memeriksa bahwa snapshot historis dan selection/policy-nya ada.
 `UNCONFIGURED` tidak memiliki nilai policy pengganti. Engine membedakan
@@ -85,13 +82,7 @@ Auth memakai REST Supabase resmi; driver `postgres@3.4.9` dipin dan compatible N
 Tidak ada SDK Supabase, grid besar, decimal library atau API simpan palsu.
 Dependency dipin dan lockfile disimpan; Next/React/ESLint dipilih berdasarkan
 engine/peer requirements yang diperiksa, lalu diverifikasi dengan checks/build lokal.
-Test runner menggunakan `node:test` bawaan Node 22 dan type stripping untuk
-modul TypeScript domain. Semua type checks tetap dijalankan oleh `tsc`; type
-stripping sendiri bukan validasi tipe. Tes browser Fase 5 memakai Playwright:
-jalankan production build, lalu `PATH=/opt/homebrew/opt/postgresql@17/bin:$PATH npm run test:e2e`.
-Bootstrap Auth lokal dijelaskan pada bukti Fase 5.
-`npm run test:postgres` menjalankan acceptance pada PostgreSQL nyata dalam cluster
-lokal sementara, terpisah dari tes default. Tidak memakai database remote.
+Laporan verifikasi fase sebelumnya merupakan bukti historis. File dan perintah pengujian yang disebut di laporan tersebut tidak lagi disertakan dalam checkout ini.
 Zod transitif pada ESLint dipin ke 4.6.5, yang memenuhi range peer/dependency
 `^3.25.0 || ^4.0.0` dan tersedia pada cache offline; bukan validator aplikasi.
 Lisensi: Next/React/ESLint MIT, TypeScript Apache-2.0, postgres Unlicense.
@@ -178,6 +169,7 @@ untuk D10=21000. Sumber D11 adalah shared follower `D10*11%`, D12=`D10*7.5%`,
 D13=`D10*0.3%`, D14 input 200, D15=`D14*11%`, D17=`SUM(D10:D15)`.
 Kasus ini dicatat sebagai `todo`, tidak diberi expected baru agar test lulus.
 
-Invariant manual selection/HPP, profil independen dan MUE hanya INU tetap berlaku.
+Invariant pemilihan penawaran manual, HPP mengikuti Biaya Konversi per profil,
+Harga Jual manual, profil independen dan MUE hanya INU tetap berlaku.
 Policy bisnis unit, komponen O/S/B, biaya/pajak/faktor nol, rounding operasional dan
 solver tetap memerlukan keputusan. Fase 4 dan pekerjaan berikutnya memerlukan instruksi.

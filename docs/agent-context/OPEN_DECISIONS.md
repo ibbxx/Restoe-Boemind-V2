@@ -7,7 +7,7 @@ Hal berikut belum disahkan oleh acuan yang diaudit dan harus dilaporkan sebelum 
 - Kebijakan freshness rinci per jenis input/mapping dan kapan status hasil berubah dari `STALE` ke `NEEDS_REVIEW`.
 - Granularitas event bisnis tambahan di luar Save/Restore dan perubahan penting yang sudah diringkas repository.
 - Kebijakan operasional per profil: komponen harga O/S, basis harga dasar/all-in, satuan, dan transformasi O→S serta Solar S→B.
-- Tarif/basis pajak dan biaya, harga jual include/exclude, komponen nol, margin negatif, serta expected values yang disahkan; EV-005 tetap TODO.
+- Tarif/basis pajak dan biaya di luar rumus template, komponen nol, margin negatif, serta expected values yang disahkan; EV-005 tetap TODO. Harga Jual dasar AHS adalah input tim dan harga setelah pajak hasil rumus (keputusan 2026-10-17).
 - Skala dan metode pembulatan operasional. Engine saat ini mendukung EVERY_OPERATION; pilihan UI untuk preview bukan pengesahan kebijakan uang.
 - Solver INU: satuan B, minimum/maksimum, step, pemilihan bila beberapa solusi memenuhi `50 ≤ Profit MUE < 51`, dan penanganan tanpa solusi.
 - Syarat finalisasi bisnis sebelum `CONFIRMED`; penolakan `CONFIRMATION_UNAVAILABLE` tetap berlaku.

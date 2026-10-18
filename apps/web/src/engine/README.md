@@ -60,8 +60,8 @@ ACTIVE mapping harus cocok dengan symbol source/target dan belum mendukung konve
 berbeda label; faktor bisnis baru tidak disimpulkan dari label atau formula sumber.
 
 Cell `MAPPING` memilih mapping ID sebagai writer. INPUT tetap manual walaupun UNSET;
-mapping aktif yang juga menulis INPUT/FORMULA menghasilkan WRITER_CONFLICT. HPP tetap
-INPUT dan domain menolak mapping ke HPP. Formula source/override, mapping, input dan
+mapping aktif yang juga menulis INPUT/FORMULA menghasilkan WRITER_CONFLICT. HPP AHS
+mengikuti Biaya Konversi pada profilnya dan domain menolak mapping langsung ke HPP. Formula source/override, mapping, input dan
 calculated result memiliki tempat terpisah. Tidak ada prioritas writer implisit.
 
 `selectionDependentCellIds` menyatakan node yang secara eksplisit bergantung pada

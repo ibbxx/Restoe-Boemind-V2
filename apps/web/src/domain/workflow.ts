@@ -11,9 +11,10 @@ import type { EngineConfiguration, EngineRun } from "../engine/contracts.ts";
 import { FormulaEngine } from "../engine/formula-engine.ts";
 import { compileGraph, relevantNodes } from "../engine/graph.ts";
 import { recordReviewContext } from "./commands.ts";
+import { reconcilePresentation } from "./dynamic-workflow.ts";
 
 export function changeWorkbook(before: WorkbookSnapshot, changes: Partial<WorkbookSnapshot>) {
-  return captureSnapshot(invalidateReviewContexts(before, { ...before, ...changes, id: id<"snapshot">() }));
+  return captureSnapshot(invalidateReviewContexts(before, reconcilePresentation({ ...before, ...changes, id: id<"snapshot">() })));
 }
 
 export function nextOfferRevisionNumber(offerId: StableId<"offer">, snapshots: readonly WorkbookSnapshot[]) {
@@ -32,7 +33,7 @@ export function emptyWorkbook(projectName: string, analysisName: string, project
     const tableId = id<"table">(), rowId = id<"row">(), columnId = id<"column">(), cellId = id<"cell">();
     return { profile, cellId, table: { id: tableId, rows: [{ id: rowId, label: "HPP manual " + profile }],
       columns: [{ id: columnId, label: "Nilai" }], rowOrder: [rowId], columnOrder: [columnId],
-      cells: [{ id: cellId, tableId, rowId, columnId, scope: profile, source: { kind: "INPUT" as const, input: { kind: "UNSET" as const } } }] } };
+      cells: [{ id: cellId, tableId, rowId, columnId, scope: profile, source: { kind: "INPUT" as const, input: { kind: "UNSET" as const } } }], merges: [] } };
   });
   return captureSnapshot({ schemaVersion: 2, id: id<"snapshot">(), projectId, project: { id: projectId, name: projectName.trim() }, analysisId,
     analysis: { analysis: { id: analysisId, projectId, name: analysisName.trim() }, vendors: [], offers: [], offerRevisions: [] },
@@ -61,7 +62,7 @@ export function appendField(snapshot: WorkbookSnapshot, stage: WorksheetSnapshot
   return { cellId, snapshot: changeWorkbook(snapshot, {
     worksheets: snapshot.worksheets.map(w => w.id === worksheet.id ? { ...w, tables: [...w.tables, {
       id: tableId, rows: [{ id: rowId, label: label.trim() }], columns: [{ id: columnId, label: "Nilai" }],
-      rowOrder: [rowId], columnOrder: [columnId], cells: [cell] }] } : w),
+      rowOrder: [rowId], columnOrder: [columnId], cells: [cell], merges: [] }] } : w),
     formulas: [...snapshot.formulas, ...formula],
     profiles: scope === "SHARED" ? snapshot.profiles : { ...snapshot.profiles, [scope]: { ...snapshot.profiles[scope],
       cellIds: [...snapshot.profiles[scope].cellIds, cellId], formulaIds: [...snapshot.profiles[scope].formulaIds, ...formula.map(f => f.id)] } },
@@ -93,7 +94,7 @@ export function reviewHppContext(snapshot: WorkbookSnapshot, run: EngineRun, con
   });
 }
 
-// Explicit pinning only; appending a newer offer never changes this mapping or manual HPP.
+// Explicit pinning only; appending a newer offer never changes the selected revision.
 export function pinOfferComponent(snapshot: WorkbookSnapshot, valueId: StableId<"offer-value">, targetId: StableId<"cell">,
   unit: string, actorId: StableId<"user">, reason: string) {
   const revision = snapshot.analysis.offerRevisions.find(r => r.id === snapshot.selectedOfferRevisionId);
@@ -101,7 +102,7 @@ export function pinOfferComponent(snapshot: WorkbookSnapshot, valueId: StableId<
   const target = snapshot.worksheets.flatMap(w => w.tables).flatMap(t => t.cells).find(c => c.id === targetId);
   requireCondition(value && revision && target && target.scope !== "SHARED", "Pilih komponen revisi dan target profil yang valid.");
   requireCondition(unit.trim().length > 0 && reason.trim().length > 0, "Satuan dan alasan mapping wajib diisi.");
-  requireCondition(!Object.values(snapshot.profiles).some(p => p.hppBase.cellId === targetId), "HPP tetap input manual.");
+  requireCondition(!Object.values(snapshot.profiles).some(p => p.hppBase.cellId === targetId), "HPP mengikuti Biaya Konversi.");
   requireCondition(target.source.kind !== "FORMULA", "Target formula tidak boleh ditimpa mapping.");
   const source = appendField(snapshot, "EVALUASI_VENDOR", "SHARED", `O · ${revision.id} · ${value.label}`, value.input);
   const prior = snapshot.mappings.find(m => m.targetCellId === targetId);

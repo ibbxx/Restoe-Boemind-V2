@@ -1,5 +1,38 @@
 import type { StableId } from "./ids.ts";
 import type { Profile } from "./profiles.ts";
+import type { EngineConfiguration } from "../engine/contracts.ts";
+
+export interface SheetPresentation {
+  readonly tableId: StableId<"table">;
+  readonly profile: Profile | "SHARED";
+  readonly rowHeights: readonly { readonly id: StableId<"row">; readonly size: number }[];
+  readonly columnWidths: readonly { readonly id: StableId<"column">; readonly size: number }[];
+}
+export interface CellPresentation {
+  readonly cellId: StableId<"cell">;
+  readonly address: string;
+  readonly kind: "LABEL" | "INPUT" | "RESULT" | "BLANK";
+  readonly tone: "plain" | "yellow" | "green" | "red" | "gray";
+  readonly bold: boolean;
+  readonly align: "left" | "center" | "right";
+  readonly unit: "text" | "1" | "IDR/L" | "L" | "IDR";
+}
+export interface SolverSettings {
+  readonly minimum: string;
+  readonly maximum: string;
+  readonly step: string;
+}
+export interface DynamicWorkbook {
+  readonly template: "AHAS-v1";
+  readonly sourceHash: string;
+  readonly configuration: EngineConfiguration | null;
+  readonly solver: SolverSettings | null;
+  readonly tables: readonly SheetPresentation[];
+  readonly cells: readonly CellPresentation[];
+  readonly bindings: readonly { readonly profile: Profile; readonly key: string; readonly cellId: StableId<"cell"> }[];
+  readonly offers: readonly { readonly columnId: StableId<"column">; readonly baseCellId: StableId<"cell">; readonly nameCellId: StableId<"cell">; readonly offerId: StableId<"offer">; readonly revisionId: StableId<"offer-revision">; readonly pattern: "C" | "D" | "E" }[];
+  readonly selections: Readonly<Record<Profile, StableId<"offer-revision"> | null>>;
+}
 
 // Raw input is retained for drafts; its business validation belongs to a configured policy.
 export type CellInput =
@@ -28,6 +61,14 @@ export interface TableSnapshot {
   readonly rowOrder: readonly StableId<"row">[];
   readonly columnOrder: readonly StableId<"column">[];
   readonly cells: readonly CellSnapshot[];
+  readonly merges: readonly TableMerge[];
+}
+
+export interface TableMerge {
+  readonly id: StableId<"merge">;
+  readonly anchorCellId: StableId<"cell">;
+  readonly rowSpan: number;
+  readonly colSpan: number;
 }
 
 export interface WorksheetSnapshot {
@@ -53,15 +94,15 @@ export interface FormulaDefinition {
   } | null;
 }
 
-export interface ManualHppInput {
-  readonly origin: "MANUAL";
+export interface HppBase {
+  readonly origin: "MANUAL" | "CONVERSION_COST";
   readonly cellId: StableId<"cell">;
   readonly contextRunId: StableId<"run"> | null;
 }
 
 export interface ProfileSnapshot {
   readonly reviewContext: ReviewContext | null;
-  readonly hppBase: ManualHppInput;
+  readonly hppBase: HppBase;
   readonly cellIds: readonly StableId<"cell">[];
   readonly formulaIds: readonly StableId<"formula">[];
 }
@@ -71,7 +112,8 @@ export type CalculationPolicyRef =
   | { readonly status: "CONFIGURED"; readonly versionId: StableId<"policy"> };
 
 export interface WorkbookSnapshot {
-  readonly schemaVersion: 2;
+  readonly schemaVersion: 2 | 3;
+  readonly workbook?: DynamicWorkbook;
   readonly id: StableId<"snapshot">;
   readonly projectId: StableId<"project">;
   readonly project: Project;

@@ -34,6 +34,13 @@ export type NodeResult = {
 );
 
 export interface EngineRun {
+  readonly solver?: import("./inu-solver.ts").SolverResult;
+  readonly provisional?: {
+    readonly status: "NONFINAL" | "ERROR";
+    readonly results: readonly NodeResult[];
+    readonly assumedZeroCellIds: readonly string[];
+    readonly assumptionsByCellId: Readonly<Record<string, readonly string[]>>;
+  };
   readonly id: StableId<"run">;
   readonly snapshotId: StableId<"snapshot">;
   readonly engineVersion: string;

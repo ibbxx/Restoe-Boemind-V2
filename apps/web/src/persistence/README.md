@@ -1,8 +1,7 @@
 # PostgreSQL / Supabase — Fase 4
 
-Prosedur dan perintah uji cloud: [CLOUD_VERIFICATION.md](./CLOUD_VERIFICATION.md).
-`npm run test:supabase` menjalankan preflight read-only; remote writes memerlukan
-persetujuan dan aktivasi terpisah sebagaimana dijelaskan pada panduan tersebut.
+Catatan historis verifikasi cloud: [CLOUD_VERIFICATION.md](./CLOUD_VERIFICATION.md).
+Script pengujian otomatis sudah dihapus atas instruksi pengguna; perintah pengujian pada catatan historis tidak lagi tersedia. Pengujian aplikasi dilakukan manual oleh pengguna.
 
 Schema: [`../../supabase/migrations/202610140001_procurement_storage.sql`](../../supabase/migrations/202610140001_procurement_storage.sql).
 Forward policy contract: [`../../supabase/migrations/20261015023734_procurement_actor_claims.sql`](../../supabase/migrations/20261015023734_procurement_actor_claims.sql).
@@ -45,7 +44,7 @@ Revisi stale ditolak; tidak ada overwrite atau merge. Restore selalu revisi draf
 Tidak ada autosave atau database migration saat aplikasi startup/build.
 
 Input bisnis yang belum valid boleh disimpan sebagai draft. Domain schema, ID,
-scope, HPP manual dan immutable versions tetap divalidasi. Confirm selalu ditolak
+scope, sumber HPP per profil dan immutable versions tetap divalidasi. Confirm selalu ditolak
 sebagai CONFIRMATION_UNAVAILABLE sampai policy finalisasi bisnis disahkan.
 
 `calculate` memuat revisi persisten lalu memanggil FormulaEngine yang sama. Hanya
@@ -173,15 +172,7 @@ Calculate adalah aksi eksplisit terpisah. Semua hasil kalkulasi masih preview.
 
 ## Verifikasi dan batas
 
-`npm run check`: tes domain/engine/Auth/API dan lint/typecheck. Auth memakai transport
-fixture; ini bukan bukti integrasi cloud Supabase Auth.
-
-`npm run test:postgres`: membuat cluster PostgreSQL lokal sementara dengan initdb,
-socket privat tanpa TCP, bootstrap fixture fungsi auth.uid, menerapkan migration,
-menjalankan acceptance database, menghentikan dan membersihkan cluster. Memerlukan
-`initdb`, `pg_ctl`, `postgres`, serta Supabase CLI 2.109.1 di PATH; tidak memakai
-DATABASE_URL dan tidak dapat mengubah remote. Tes database default dilewati kecuali
-perintah ini dijalankan.
+`npm run check` hanya menjalankan lint dan TypeScript, tanpa pengujian otomatis.
 
 Tes nyata mencakup reload lintas koneksi, race first-save/head, retry, restore/replay,
 rollback setelah insert snapshot/revision, RLS, immutable history dan stale run.
