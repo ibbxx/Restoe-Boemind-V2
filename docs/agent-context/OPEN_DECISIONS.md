@@ -1,10 +1,10 @@
 # Open Decisions
 
-Keputusan 2026-10-19 tentang penyimpanan telah ditetapkan: satu kondisi terbaru per Analysis, tanpa arsip revisi/hasil hitung baru. Migrasi pada database aktif kemudian diizinkan dan berhasil diterapkan sebagai `20261019035326_current_workbooks_with_latest_data`. Penghapusan fisik arsip lama tetap di luar cakupan. Konsekuensinya tidak tersedia restore ke versi sebelum Simpan terakhir.
+Keputusan storage final 2026-10-19 sudah ditetapkan: tiga tabel aktif projects/analyses/current_workbooks, satu payload normalized per Analysis, offer aktif berisi nilai, hasil kalkulasi transient, tanpa histori. Penghapusan fisik arsip lama diizinkan melalui migration `20261019071911_current_only_procurement.sql`, yang baru dibuat dan diverifikasi lokal; cloud belum diubah. Migration sebelumnya `20261019035326_current_workbooks_with_latest_data` tetap merupakan baseline cloud. Tidak tersedia restore ke kondisi sebelum Save terakhir.
 
 Hal berikut belum disahkan oleh acuan yang diaudit dan harus dilaporkan sebelum implementasi terkait:
 
-- Apakah istilah Project/Analysis pada persistence final memerlukan relasi storage selain kontrak schema v2 dan scope in-memory saat ini.
+- Relasi storage Project/Analysis sudah ditetapkan: satu Project mempunyai banyak Analysis, setiap Analysis mempunyai satu current_workbooks dengan foreign key komposit project/owner.
 - Daftar lengkap field dan aturan validasi MappingVersion (terutama scope/unit/provenance) di luar field yang sudah didefinisikan kontrak; transformasi bisnis tidak boleh diasumsikan.
 - Kebijakan freshness rinci per jenis input/mapping dan kapan status hasil berubah dari `STALE` ke `NEEDS_REVIEW`.
 - Granularitas event bisnis tambahan di luar Save/Restore dan perubahan penting yang sudah diringkas repository.

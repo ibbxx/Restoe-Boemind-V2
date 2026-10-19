@@ -1,8 +1,8 @@
 export type EntityKind =
-  | "project" | "vendor" | "offer" | "offer-revision" | "offer-value"
-  | "worksheet" | "table" | "row" | "column" | "cell" | "merge" | "formula" | "formula-version" | "snapshot"
-  | "policy" | "revision" | "version" | "run" | "user" | "mutation"
-  | "analysis" | "mapping" | "mapping-version" | "change-event" | "aggregate" | "aggregate-version";
+  | "project" | "vendor" | "offer" | "offer" | "offer-value"
+  | "worksheet" | "table" | "row" | "column" | "cell" | "merge" | "formula" | "snapshot"
+  | "policy" | "version" | "run" | "user" | "mutation"
+  | "analysis" | "mapping" | "aggregate" | "aggregate-version";
 
 declare const entityKind: unique symbol;
 export type StableId<Kind extends EntityKind> = string & {

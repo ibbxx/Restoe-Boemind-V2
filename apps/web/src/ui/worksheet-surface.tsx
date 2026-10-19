@@ -38,7 +38,7 @@ interface SurfaceProps {
   onEditing?: () => void;
   onSave?: () => void;
   onInput?: (stage: Stage, label: string, value: string, kind: "TEXT" | "NUMERIC_TEXT", cell: CellSnapshot | undefined) => void;
-  onSelectOffer?: (revisionId: string) => void;
+  onSelectOffer?: (selectionId: string) => void;
 }
 
 const costGroups = [
@@ -110,8 +110,8 @@ export function WorksheetSurface(props: SurfaceProps) {
   async function handlePrint() {
     if (!snapshot || isPreparingPrint) return;
     if (volumeError) { setToolbarError(volumeError); return; }
-    const revisionId = snapshot.workbook ? snapshot.workbook.selections[snapshot.activeProfile] : snapshot.selectedOfferRevisionId;
-    const offerId = snapshot.analysis.offerRevisions.find(revision => revision.id === revisionId)?.offerId;
+    const selectionId = snapshot.workbook ? snapshot.workbook.selections[snapshot.activeProfile] : snapshot.selectedOfferId;
+    const offerId = snapshot.analysis.offers.find(activeOffer => activeOffer.id === selectionId)?.id;
     if (!offerId) { setToolbarError("Pilih vendor untuk Konversi sebelum mencetak."); return; }
     setIsPreparingPrint(true);
     onPrintLoading?.(true);
@@ -126,11 +126,17 @@ export function WorksheetSurface(props: SurfaceProps) {
       const sheet = sheetRef.current;
       if (!sheet) return;
       if (sheet.querySelector('.sheet-input[data-invalid="true"]')) throw new Error("Perbaiki input sel sebelum mencetak.");
-      const columnId = snapshot.workbook?.offers.find(offer => offer.offerId === offerId)?.columnId;
-      const table = snapshot.worksheets.find(w => w.stage === "EVALUASI_VENDOR")?.tables.find(t => t.columnOrder.includes(columnId!));
-      const index = snapshot.workbook ? table?.columnOrder.indexOf(columnId!) ?? -1 : snapshot.analysis.offers.findIndex(offer => offer.id === offerId) + 1;
-      if (index < 1) throw new Error("Kolom vendor terpilih tidak ditemukan.");
-      await printWorkbook(sheet, index);
+      let indexes: number[];
+      if (snapshot.workbook) {
+        const table = snapshot.worksheets.find(w => w.stage === "EVALUASI_VENDOR")?.tables.find(t =>
+          t.cells.some(cell => cell.scope === "SHARED" || cell.scope === snapshot.activeProfile));
+        indexes = snapshot.analysis.offers.map(offer => {
+          const columnId = snapshot.workbook!.offers.find(entry => entry.offerId === offer.id)?.columnId;
+          return columnId ? table?.columnOrder.indexOf(columnId) ?? -1 : -1;
+        }).sort((a, b) => a - b);
+      } else indexes = snapshot.analysis.offers.map((_, index) => index + 1);
+      if (!indexes.length || indexes.some(index => index < 1)) throw new Error("Kolom vendor untuk cetak tidak ditemukan.");
+      await printWorkbook(sheet, indexes);
     } catch (cause) { setToolbarError(cause instanceof Error ? cause.message : "Laporan gagal disiapkan."); }
     finally { setIsPreparingPrint(false); onPrintLoading?.(false); }
   }
@@ -411,7 +417,7 @@ export function WorksheetSurface(props: SurfaceProps) {
     }
     const vendorId = id<"vendor">(), offerId = id<"offer">();
     return includeNewVendorComponentTotals(prepareLegacySheet(addOffer(addVendor(current, { id: vendorId, analysisId: current.analysisId, name }),
-      { id: offerId, analysisId: current.analysisId, vendorId, label: name })), offerId);
+      { id: offerId, analysisId: current.analysisId, vendorId, label: name, values: [] })), offerId);
   }
 
   function handleProfileChange(profile: Profile) {
@@ -419,28 +425,37 @@ export function WorksheetSurface(props: SurfaceProps) {
     apply(() => changeSheetProfile(snapshot, profile));
   }
 
-  function handleSelectOffer(revisionId: string) {
+  function handleSelectOffer(selectionId: string) {
     if (snapshot?.workbook && actor) {
-      apply(() => selectSheetOffer(snapshot, parseStableId<"offer-revision">(revisionId), actor));
+      apply(() => selectSheetOffer(snapshot, parseStableId<"offer">(selectionId), actor));
     } else if (onSelectOffer) {
-      onSelectOffer(revisionId);
+      onSelectOffer(selectionId);
     }
   }
 
   function vendorDropdown() {
-    const selectedRevision = snapshot?.analysis.offerRevisions.find(r => r.id === snapshot.selectedOfferRevisionId);
-    return <select className="conversion-vendor-select" aria-label="Vendor untuk Konversi" value={selectedRevision?.offerId ?? ""}
+    const selectedOffer = snapshot?.analysis.offers.find(r => r.id === snapshot.selectedOfferId);
+    return <select className="conversion-vendor-select" aria-label="Vendor untuk Konversi" value={selectedOffer?.id ?? ""}
       disabled={disabled || !snapshot || (!!snapshot.workbook && !actor)} onChange={event => {
-        const revision = snapshot?.analysis.offerRevisions.filter(r => r.offerId === event.target.value)
-          .reduce<(NonNullable<typeof snapshot>["analysis"]["offerRevisions"])[number] | undefined>((latest, r) => !latest || r.revisionNumber > latest.revisionNumber ? r : latest, undefined);
-        if (revision) handleSelectOffer(revision.id);
+        const activeOffer = snapshot?.analysis.offers.find(r => r.id === event.target.value);
+        if (activeOffer) handleSelectOffer(activeOffer.id);
       }}>
       <option value="" disabled>Pilih vendor</option>
       {snapshot?.analysis.offers.map(offer => <option key={offer.id} value={offer.id}
-        disabled={!snapshot.analysis.offerRevisions.some(r => r.offerId === offer.id)}>
-        {snapshot.analysis.vendors.find(v => v.id === offer.vendorId)?.name ?? offer.label}
+        disabled={!snapshot.analysis.offers.some(r => r.id === offer.id)}>
+        {vendorDisplayName(offer.id)}
       </option>)}
     </select>;
+  }
+
+  function vendorDisplayName(offerId: string) {
+    const offer = snapshot?.analysis.offers.find(o => o.id === offerId);
+    const column = snapshot?.workbook?.offers.find(o => o.offerId === offerId);
+    const header = snapshot?.worksheets.filter(w => w.stage === "EVALUASI_VENDOR").flatMap(w => w.tables.flatMap(t =>
+      t.cells.filter(c => column ? c.id === column.nameCellId : t.rows.some(r => r.id === c.rowId && r.label.endsWith(`|vendor:${offerId}:Nama vendor`)))))[0];
+    const result = header && results.get(header.id);
+    return result?.status === "TEXT" && result.text.trim() ? result.text.trim()
+      : snapshot?.analysis.vendors.find(v => v.id === offer?.vendorId)?.name || offer?.label || "Vendor";
   }
 
   // Value formatting
@@ -465,7 +480,7 @@ export function WorksheetSurface(props: SurfaceProps) {
     ? `${selectedResult.status}: ${selectedResult.code}${selectedResult.path.length ? ` · ${selectedResult.path.map(id => codes.get(id) ?? id).join(" → ")}` : ""}` : "";
 
   if (!snapshot) return null;
-  const selectedVendorOfferId = snapshot.analysis.offerRevisions.find(revision => revision.id === snapshot.selectedOfferRevisionId)?.offerId;
+  const selectedVendorOfferId = snapshot.analysis.offers.find(activeOffer => activeOffer.id === snapshot.selectedOfferId)?.id;
   const selectedVendorComponents = selectedVendorOfferId ? vendorComponents(snapshot, selectedVendorOfferId) : [];
   const componentLabel = (component: (typeof selectedVendorComponents)[number]) => component.labelCell ? cellValue(component.labelCell) : component.role;
   const removableComponents = removableVendorComponents(snapshot);
@@ -513,7 +528,7 @@ export function WorksheetSurface(props: SurfaceProps) {
         <button type="button" className="dialog-close" aria-label="Tutup" onClick={() => removeVendorDialogRef.current?.close()}>×</button></header>
       <div className="vendor-delete-list">
         {snapshot.analysis.offers.map((offer, index) => {
-          const name = snapshot.analysis.vendors.find(vendor => vendor.id === offer.vendorId)?.name || offer.label;
+          const name = vendorDisplayName(offer.id);
           return <label key={offer.id} className={vendorToRemove === offer.id ? "is-selected" : undefined}>
             <input type="radio" name="vendorToRemove" value={offer.id} checked={vendorToRemove === offer.id} onChange={() => setVendorToRemove(offer.id)} />
             <span className="vendor-delete-index">{String(index + 1).padStart(2, "0")}</span><strong>{name}</strong>
@@ -550,12 +565,12 @@ export function WorksheetSurface(props: SurfaceProps) {
 
     const offers = snapshot.workbook.offers;
     const vendorColumnsCount = Math.max(3, offers.length);
-    const selectedRevisionId = snapshot.selectedOfferRevisionId ?? snapshot.workbook.selections[snapshot.activeProfile];
-    const selectedOfferId = snapshot.analysis.offerRevisions.find(revision => revision.id === selectedRevisionId)?.offerId;
+    const selectedId = snapshot.selectedOfferId ?? snapshot.workbook.selections[snapshot.activeProfile];
+    const selectedOfferId = snapshot.analysis.offers.find(activeOffer => activeOffer.id === selectedId)?.id;
     const selectedVendorColumnId = offers.find(offer => offer.offerId === selectedOfferId)?.columnId;
     const sheetStyle = { "--vendor-columns": vendorColumnsCount } as CSSProperties;
     const overviewValue = (key: string) => cellValue(allTables.flatMap(t => t.cells).find(c => c.id === binding(snapshot, snapshot.activeProfile, key)));
-    const hppContext = snapshot.profiles[snapshot.activeProfile].reviewContext?.decisionStatus ?? "Belum ditinjau";
+    const hppContext = "Belum ditinjau";
 
     const renderTableGrid = (
       table: TableSnapshot | undefined,
@@ -993,13 +1008,9 @@ export function WorksheetSurface(props: SurfaceProps) {
     return cell ? legacySlot("EVALUASI_VENDOR", label, "NUMERIC_TEXT", cell) : <span role="alert">Sel {address} belum tersedia</span>;
   }
 
-  const selected = snapshot?.analysis.offerRevisions.find(r => r.id === snapshot.selectedOfferRevisionId);
-  const legacyOffers = snapshot?.analysis.offers.map(offer => {
-    const revisions = snapshot.analysis.offerRevisions.filter(r => r.offerId === offer.id);
-    const latest = revisions.reduce<typeof selected>((latest, r) => !latest || r.revisionNumber > latest.revisionNumber ? r : latest, undefined);
-    return { offer, revision: latest,
-      vendor: snapshot.analysis.vendors.find(v => v.id === offer.vendorId)! };
-  }) ?? [];
+  const selected = snapshot?.analysis.offers.find(r => r.id === snapshot.selectedOfferId);
+  const legacyOffers = snapshot?.analysis.offers.map(offer => ({ offer,
+    vendor: { ...snapshot.analysis.vendors.find(v => v.id === offer.vendorId)!, name: vendorDisplayName(offer.id) } })) ?? [];
   const legacyVendorColumns = Math.max(3, legacyOffers.length);
   const legacyComponentRows = legacyOffers[0] ? vendorComponents(snapshot, legacyOffers[0].offer.id).filter(component => component.role !== "TOTAL") : [];
   const hpp = fields.find(f => f.cell.id === snapshot?.profiles[snapshot.activeProfile].hppBase.cellId)?.cell;
@@ -1052,7 +1063,7 @@ export function WorksheetSurface(props: SurfaceProps) {
         <div className="sheet-left">
           <div className="vendor-table-container">
           <table className="vendor-sheet" aria-label="Evaluasi Vendor">
-            <colgroup>{Array.from({ length: legacyVendorColumns + 1 }, (_, i) => <col key={i} className={i > 0 && selected && selected.offerId !== legacyOffers[i - 1]?.offer.id ? "vendor-unselected" : undefined} />)}</colgroup>
+            <colgroup>{Array.from({ length: legacyVendorColumns + 1 }, (_, i) => <col key={i} className={i > 0 && selected && selected.id !== legacyOffers[i - 1]?.offer.id ? "vendor-unselected" : undefined} />)}</colgroup>
             <thead><tr className="vendor-title"><th colSpan={legacyVendorColumns + 1}><div className="vendor-title-layout"><div className="vendor-title-content">{vendorSlot("B3", "Judul")}</div>{vendorActions}</div></th></tr></thead>
             <tbody>
               <tr className="sheet-spacer"><td colSpan={legacyVendorColumns + 1}>{vendorSlot("B4", "Baris 4")}</td></tr>
@@ -1064,21 +1075,21 @@ export function WorksheetSurface(props: SurfaceProps) {
               ))}
               <tr className="sheet-spacer"><td colSpan={legacyVendorColumns + 1}>{vendorSlot("B8", "Baris 8")}</td></tr>
               <tr className="vendor-columns"><th>{vendorSlot("B9", "Uraian")}</th>{legacyOffers.map((entry, index) => (
-                <th key={entry.offer.id} className={selected && selected.offerId !== entry.offer.id ? "vendor-unselected" : undefined}>{vendorSlot(`${vendorColumn(index)}9`, `Nama vendor ${index + 1}`)}</th>
+                <th key={entry.offer.id} className={selected && selected.id !== entry.offer.id ? "vendor-unselected" : undefined}>{vendorSlot(`${vendorColumn(index)}9`, `Nama vendor ${index + 1}`)}</th>
               ))}</tr>
               {legacyComponentRows.map(component => {
                 const label = componentLabel(component);
                 return <tr key={component.labelCell?.id ?? component.source.id}><td>{component.labelCell ? legacySlot("EVALUASI_VENDOR", `Uraian ${label}`, "TEXT", component.labelCell) : label}</td>{legacyOffers.map(entry => {
                   const value = vendorComponents(snapshot, entry.offer.id).find(other => component.labelCell ? other.labelCell?.id === component.labelCell.id : other.role === component.role)?.source;
-                  return <td className={`sheet-number${selected && selected.offerId !== entry.offer.id ? " vendor-unselected" : ""}`} key={entry.offer.id}>
+                  return <td className={`sheet-number${selected && selected.id !== entry.offer.id ? " vendor-unselected" : ""}`} key={entry.offer.id}>
                     {value ? legacySlot("EVALUASI_VENDOR", `${entry.vendor.name} · ${label}`, "NUMERIC_TEXT", value) : ""}</td>;
                 })}</tr>;
               })}
               <tr className="vendor-total"><td>{vendorSlot("B17", "Label TOTAL")}</td>{legacyOffers.map((entry, index) => (
-                <td className={selected && selected.offerId !== entry.offer.id ? "vendor-unselected" : undefined} key={entry.offer.id}>{vendorSlot(`${vendorColumn(index)}17`, `${entry.vendor.name} · TOTAL`)}</td>
+                <td className={selected && selected.id !== entry.offer.id ? "vendor-unselected" : undefined} key={entry.offer.id}>{vendorSlot(`${vendorColumn(index)}17`, `${entry.vendor.name} · TOTAL`)}</td>
               ))}</tr>
               <tr className="vendor-notes"><td>{vendorSlot("B18", "Label Notes")}</td>{legacyOffers.map((entry, index) => (
-                <td className={selected && selected.offerId !== entry.offer.id ? "vendor-unselected" : undefined} key={entry.offer.id}>{vendorSlot(`${vendorColumn(index)}18`, `${entry.vendor.name} · Notes`)}</td>
+                <td className={selected && selected.id !== entry.offer.id ? "vendor-unselected" : undefined} key={entry.offer.id}>{vendorSlot(`${vendorColumn(index)}18`, `${entry.vendor.name} · Notes`)}</td>
               ))}</tr>
             </tbody>
           </table>
@@ -1101,7 +1112,7 @@ export function WorksheetSurface(props: SurfaceProps) {
               <tr className="sheet-spacer"><td colSpan={3} /></tr>
               <tr className="conversion-period"><th colSpan={3}>{legacySlot("KONVERSI_JAGAD", "Periode", "TEXT")}</th></tr>
               <tr className="conversion-meta"><th>Lokasi <span>:</span></th><td colSpan={2}>{legacySlot("KONVERSI_JAGAD", "Lokasi", "TEXT")}</td></tr>
-              <tr className="conversion-meta"><th>Nama {snapshot?.activeProfile === "SOLAR_BAWAH" ? "Solar" : "INU"} <span>:</span></th><td colSpan={2}>{vendorDropdown()}<span className="cell-print-value vendor-print-name">{selected ? legacyOffers.find(o => o.offer.id === selected.offerId)?.vendor.name : ""}</span></td></tr>
+              <tr className="conversion-meta"><th>Nama {snapshot?.activeProfile === "SOLAR_BAWAH" ? "Solar" : "INU"} <span>:</span></th><td colSpan={2}>{vendorDropdown()}<span className="cell-print-value vendor-print-name">{selected ? legacyOffers.find(o => o.offer.id === selected.id)?.vendor.name : ""}</span></td></tr>
               <tr className="sheet-spacer"><td colSpan={3} /></tr>
               <tr className="conversion-columns"><th>Uraian</th><th>{snapshot?.activeProfile === "SOLAR_BAWAH" ? "Harga Solar" : "Harga INU"}</th><th>Biaya</th></tr>
               {conversionRows.map(row => (

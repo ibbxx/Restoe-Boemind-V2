@@ -7,12 +7,12 @@ import type { WorkbookSnapshot } from "../domain/contracts.ts";
 import type { StableId } from "../domain/ids.ts";
 import { createStableId as id, parseStableId } from "../domain/ids.ts";
 import { updateCellInput } from "../domain/commands.ts";
-import { emptyWorkbook, appendField } from "../domain/workflow.ts";
+import { emptyWorkbook, appendField, initializeAnalysisDate } from "../domain/workflow.ts";
 import { captureSnapshot } from "../domain/snapshots.ts";
 import type { SaveRequest, SaveOutcome, SavedWorkbook } from "../application/contracts.ts";
 import { FormulaEngine } from "../engine/formula-engine.ts";
 import type { EngineConfiguration, EngineRun } from "../engine/contracts.ts";
-import { api, ApiError, saveRequestBody } from "./workbook-client.ts";
+import { api, ApiError, invalidateSessionRequests, readSession, saveRequestBody } from "./workbook-client.ts";
 import { WorksheetSurface } from "./worksheet-surface.tsx";
 import { LoadingIndicator } from "./loading-indicator.tsx";
 import { createProcurementWorkbook, prepareNumericBlanks } from "../domain/procurement-template.ts";
@@ -63,6 +63,11 @@ export function ProcurementWorkspace() {
   const savedVersion = useRef<StableId<"version"> | null>(null);
   useEffect(() => () => { workspaceEpoch.current++; }, []);
 
+  const requireLogin = useCallback((status: string) => {
+    invalidateSessionRequests(); workspaceEpoch.current++;
+    setActor(null); setError(""); setMessage(status); setBusy(false);
+  }, []);
+
   const load = useCallback(async (analysisId: string) => {
     const epoch = ++workspaceEpoch.current, actorId = lastActor.current;
     const stored = await api<SavedWorkbook | null>(`/api/workbook?analysisId=${analysisId}`);
@@ -73,7 +78,7 @@ export function ProcurementWorkspace() {
     ({ snapshot: s, configuration: config } = prepareCalculationPolicy(s, config));
     s = prepareVolumes(prepareNumericBlanks(makeAhsSaleInput(connectAhsHpp(prepareLegacySheet(prepareVendorColumns(s))))));
     config = s.workbook ? s.workbook.configuration : legacyConfiguration(s, config);
-    s = refreshCurrentOffers(s, config);
+    s = refreshCurrentOffers(s);
     const mappingActor = lastActor.current;
     if (mappingActor) s = prepareSelectedVendorMappings(s, mappingActor);
     config = s.workbook ? s.workbook.configuration : legacyConfiguration(s, config);
@@ -82,7 +87,11 @@ export function ProcurementWorkspace() {
     setConfiguration(config); setDirty(s.id !== stored.snapshot.id); pendingSave.current = null;
     window.history.replaceState(null, "", "?analysisId=" + analysisId);
   }, [prepareVolumes]);
-  const refreshProjects = useCallback(async () => { setProjects(await api("/api/workbook?view=projects")); }, []);
+  const refreshProjects = useCallback(async () => {
+    const actorId = lastActor.current;
+    const next = await api<ProjectListItem[]>("/api/workbook?view=projects");
+    if (lastActor.current === actorId) setProjects(next);
+  }, []);
   async function showProject(projectId: string) {
     if (expandedProjectId === projectId) { setExpandedProjectId(null); setAnalyses([]); return; }
     setExpandedProjectId(projectId); setNewWorkbookProjectId(null);
@@ -106,36 +115,48 @@ export function ProcurementWorkspace() {
     setBusy(true); setSaving(isSave); setError(""); setMessage("Memproses…");
     try { await action(); }
     catch (cause) {
+      if (cause instanceof ApiError && cause.code === "SESSION_CHANGED") return;
+      if (cause instanceof ApiError && cause.code === "UNAUTHENTICATED") {
+        requireLogin("Sesi berakhir. Silakan masuk kembali."); return;
+      }
       setError(cause instanceof Error ? cause.message : "Operasi gagal."); setMessage("");
-      if (cause instanceof ApiError && cause.code === "UNAUTHENTICATED") setActor(null);
     } finally { setBusy(false); setSaving(false); }
   }
   useEffect(() => {
-    let active = true;
+    let active = true, epoch = workspaceEpoch.current;
+    const current = () => active && workspaceEpoch.current === epoch;
     void (async () => {
       try {
-        const session = await api<{ actorId: StableId<"user"> }>("/api/session");
-        if (!active) return;
+        const session = await readSession();
+        if (!current()) return;
+        if (!session.actorId) { requireLogin("Silakan masuk."); return; }
         lastActor.current = session.actorId; setActor(session.actorId); await refreshProjects();
+        if (!current()) return;
         const selected = new URLSearchParams(window.location.search).get("analysisId");
-        if (selected) await load(parseStableId<"analysis">(selected));
-        if (active) setMessage("Siap.");
-      } catch (cause) {
-        if (active) {
-          setMessage("");
-          if (!(cause instanceof ApiError && cause.code === "UNAUTHENTICATED")) setError(cause instanceof Error ? cause.message : "Sesi gagal dimuat.");
+        if (selected) {
+          const loading = load(parseStableId<"analysis">(selected));
+          epoch = workspaceEpoch.current;
+          await loading;
         }
-      } finally { if (active) setBusy(false); }
+        if (current()) setMessage("Siap.");
+      } catch (cause) {
+        if (current()) {
+          if (cause instanceof ApiError && cause.code === "SESSION_CHANGED") return;
+          if (cause instanceof ApiError && cause.code === "UNAUTHENTICATED") { requireLogin("Silakan masuk kembali."); return; }
+          setMessage("");
+          setError(cause instanceof Error ? cause.message : "Sesi gagal dimuat.");
+        }
+      } finally { if (current()) setBusy(false); }
     })();
     return () => { active = false; };
-  }, [load, refreshProjects]);
+  }, [load, refreshProjects, requireLogin]);
   useEffect(() => {
     const channel = new BroadcastChannel("procurement-session"); sessionChannel.current = channel;
     channel.onmessage = event => {
-      if (event.data?.actorId !== lastActor.current) { workspaceEpoch.current++; setActor(null); setMessage("Sesi berubah di tab lain. Silakan masuk kembali."); }
+      if (event.data?.actorId !== lastActor.current) requireLogin("Sesi berubah di tab lain. Silakan masuk kembali.");
     };
     return () => { channel.close(); sessionChannel.current = null; };
-  }, []);
+  }, [requireLogin]);
   useEffect(() => {
     const guard = (event: BeforeUnloadEvent) => { if (dirty) event.preventDefault(); };
     window.addEventListener("beforeunload", guard); return () => window.removeEventListener("beforeunload", guard);
@@ -147,7 +168,7 @@ export function ProcurementWorkspace() {
     ({ snapshot: s, configuration: config } = prepareCalculationPolicy(s, config));
     s = prepareVolumes(prepareNumericBlanks(makeAhsSaleInput(connectAhsHpp(prepareLegacySheet(prepareVendorColumns(s))))));
     config = s.workbook ? s.workbook.configuration : legacyConfiguration(s, config);
-    s = refreshCurrentOffers(s, config);
+    s = refreshCurrentOffers(s);
     if (actor) s = prepareSelectedVendorMappings(s, actor);
     config = s.workbook ? s.workbook.configuration : legacyConfiguration(s, config);
     configurationRef.current = config; snapshotRef.current = s; setSnapshot(s); setConfiguration(config); setDirty(true); pendingSave.current = null; setError(""); setMessage("Perubahan belum disimpan.");
@@ -219,7 +240,7 @@ export function ProcurementWorkspace() {
         {snapshot && <button aria-label="Simpan workbook" aria-busy={saving} disabled={busy} onClick={() => void task(() => save(), true)}>{saving ? "Menyimpan…" : "Simpan"}</button>}
         <button disabled={busy} onClick={() => {
           if (dirty && !window.confirm("Keluar akan membuang draft yang belum disimpan. Lanjutkan?")) return;
-          void task(async () => { await api("/api/session", { method: "DELETE" }, false); setActor(null); snapshotRef.current = null; setSnapshot(null); setProjects([]); setAnalyses([]); setExpandedProjectId(null);
+          void task(async () => { invalidateSessionRequests(); workspaceEpoch.current++; await api("/api/session", { method: "DELETE" }, false); setActor(null); snapshotRef.current = null; setSnapshot(null); setProjects([]); setAnalyses([]); setExpandedProjectId(null);
             sessionChannel.current?.postMessage({ actorId: null }); lastActor.current = null; workspaceEpoch.current++;
             configurationRef.current = null; setConfiguration(null); setDirty(false); pendingSave.current = null; window.history.replaceState(null, "", "/"); setMessage("Berhasil keluar."); });
         }}>Keluar</button>
@@ -231,6 +252,7 @@ export function ProcurementWorkspace() {
     {!actor ? <section><h2>Masuk</h2><form onSubmit={event => { const form = submit(event); const element = event.currentTarget;
       const password = element.elements.namedItem("password"); if (password instanceof HTMLInputElement) password.value = "";
       void task(async () => {
+        invalidateSessionRequests(); workspaceEpoch.current++;
         const session = await api<{ actorId: StableId<"user"> }>("/api/session", { method: "POST", body: JSON.stringify({ operation: "LOGIN", email: field(form, "email"), password: String(form.get("password")) }) }, false);
         if (lastActor.current !== session.actorId) {
           workspaceEpoch.current++;
@@ -258,7 +280,7 @@ export function ProcurementWorkspace() {
             const next = submitter?.value === "empty"
               ? emptyWorkbook(projectName, analysisName, projectId)
               : createProcurementWorkbook(projectName, analysisName, projectId);
-            edit(next, next.workbook?.configuration ?? null);
+            edit(initializeAnalysisDate(prepareLegacySheet(next)), next.workbook?.configuration ?? null);
             savedVersion.current = null; setNewWorkbookProjectId(null);
             window.history.replaceState(null, "", "/");
           });
@@ -308,8 +330,8 @@ export function ProcurementWorkspace() {
         onError={setError}
         onEditing={() => { setDirty(true); pendingSave.current = null; }}
         onSave={() => void task(() => save(), true)}
-        onSelectOffer={revisionId => { if (snapshot && actor) mutate(() => {
-          edit(selectSheetOffer(snapshot, parseStableId<"offer-revision">(revisionId), actor));
+        onSelectOffer={selectionId => { if (snapshot && actor) mutate(() => {
+          edit(selectSheetOffer(snapshot, parseStableId<"offer">(selectionId), actor));
         }); }}
         onInput={(stage, label, value, kind, cell) => { if (snapshot) mutate(() => {
           const input = value.trim() ? { kind, text: value } : { kind: "UNSET" as const };

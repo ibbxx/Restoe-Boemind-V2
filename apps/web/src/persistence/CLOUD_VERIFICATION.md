@@ -1,5 +1,7 @@
 # Verifikasi Supabase Cloud Fase 4
 
+> Baseline versi terdahulu. Kontrak histori dan langkah restore/replay dalam dokumen ini tidak berlaku bagi runtime current-only. Lihat `docs/agent-context/PERSISTENCE_CURRENT_ONLY_AUDIT.md` dan README persistence untuk kontrak aktif. Migration `20261019071911_current_only_procurement.sql` belum diterapkan ke cloud; tes baru memakai PostgreSQL lokal terisolasi.
+
 Panduan ini melanjutkan [implementasi persistence](./README.md). Skrip memakai
 SupabaseAuthenticator, PostgresRevisionRepository, handler aplikasi dan fixture
 struktural yang sudah ada. Tidak ada perubahan engine, formula atau expected value.

@@ -13,7 +13,7 @@
     "lint": "eslint . --max-warnings=0",
     "typecheck": "next typegen && tsc --noEmit",
     "check": "npm run lint && npm run typecheck",
-    "migrate:current-workbooks": "NODE_EXTRA_CA_CERTS=./certs/supabase-prod-ca-2021.crt node --experimental-strip-types scripts/migrate-current-workbooks.ts"
+    "test": "node --experimental-transform-types --test tests/*.test.ts"
   },
   "dependencies": {
     "next": "16.4.0",

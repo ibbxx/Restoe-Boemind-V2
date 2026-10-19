@@ -20,6 +20,3 @@ export type SaveOutcome =
   | { readonly status: "CONFLICT"; readonly code: "STALE_VERSION";
       readonly expectedVersion: StableId<"version"> | null; readonly currentVersion: StableId<"version"> | null }
   | { readonly status: "REJECTED"; readonly code: "INVALID_REQUEST" | "IDEMPOTENCY_CONFLICT"; readonly reason: string };
-export interface WorkbookService {
-  save(request: SaveRequest): Promise<SaveOutcome>;
-}

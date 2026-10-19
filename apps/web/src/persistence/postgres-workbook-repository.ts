@@ -4,21 +4,19 @@ import { parseStableId } from "../domain/ids.ts";
 import type { StableId } from "../domain/ids.ts";
 import { canonicalJson, freeze } from "../domain/snapshots.ts";
 import { DomainValidationError, requireCondition } from "../domain/validation.ts";
-import type { EngineConfiguration } from "../engine/contracts.ts";
-import type { WorkbookSnapshot } from "../domain/contracts.ts";
-import type { PersistentWorkbookRepository } from "./contracts.ts";
 import { captureSavedWorkbook, parseSaveRequest, planSave } from "./current-workbook.ts";
 import type { CurrentRecord } from "./current-workbook.ts";
 import { enterRuntimeRole } from "./runtime-role.ts";
+import { encodeWorkbook, decodeWorkbook } from "./workbook-data.ts";
 
 type Tx = postgres.TransactionSql;
-type CurrentRow = { snapshot: WorkbookSnapshot; configuration: EngineConfiguration | null; version: string;
+type CurrentRow = { data: unknown; version: string; analysis_name: string; project_name: string;
   saved_at: Date; saved_by: string; mutation_id: string; request_signature: string; project_id: string };
 export class AccessDeniedError extends Error {
   constructor() { super("Resource unavailable or access denied."); }
 }
 
-export class PostgresWorkbookRepository implements PersistentWorkbookRepository {
+export class PostgresWorkbookRepository {
   readonly actorId: StableId<"user">;
   readonly timings: Record<string, number> = {};
   constructor(readonly sql: postgres.Sql, verifiedActorId: unknown) { this.actorId = parseStableId<"user">(verifiedActorId); }
@@ -34,10 +32,13 @@ export class PostgresWorkbookRepository implements PersistentWorkbookRepository 
   }
 
   async #current(tx: Tx, analysisId: StableId<"analysis">): Promise<CurrentRecord | null> {
-    const [row] = await tx<CurrentRow[]>`select snapshot, configuration, version, saved_at, saved_by, mutation_id, request_signature, project_id
-      from procurement.current_workbooks where analysis_id = ${analysisId}`;
+    const [row] = await tx<CurrentRow[]>`select c.data, c.version, c.saved_at, c.saved_by, c.mutation_id, c.request_signature, c.project_id,
+      a.name as analysis_name, p.name as project_name from procurement.current_workbooks c
+      join procurement.analyses a on a.id = c.analysis_id and a.owner_id = c.owner_id
+      join procurement.projects p on p.id = c.project_id and p.owner_id = c.owner_id where c.analysis_id = ${analysisId}`;
     if (!row) return null;
-    const workbook = captureSavedWorkbook({ snapshot: row.snapshot, configuration: row.configuration,
+    const current = decodeWorkbook(row.data, { analysisId, projectId: row.project_id, analysisName: row.analysis_name, projectName: row.project_name });
+    const workbook = captureSavedWorkbook({ ...current,
       version: parseStableId<"version">(row.version), savedAt: new Date(row.saved_at).toISOString(), savedBy: parseStableId<"user">(row.saved_by) });
     requireCondition(workbook.snapshot.analysisId === analysisId && workbook.snapshot.projectId === row.project_id && workbook.savedBy === this.actorId, "Invalid workbook ownership.");
     return { workbook, mutationId: parseStableId<"mutation">(row.mutation_id), signature: row.request_signature };
@@ -81,12 +82,11 @@ export class PostgresWorkbookRepository implements PersistentWorkbookRepository 
         await tx`update procurement.projects set name = ${s.project.name} where id = ${s.projectId}`;
         await tx`update procurement.analyses set name = ${s.analysis.analysis.name} where id = ${s.analysisId}`;
         const w = next.record.workbook;
-        const snapshot = tx.json(JSON.parse(canonicalJson(w.snapshot)));
-        const configuration = w.configuration === null ? null : tx.json(JSON.parse(canonicalJson(w.configuration)));
+        const data = tx.json(JSON.parse(canonicalJson(encodeWorkbook(w.snapshot, w.configuration))));
         await tx`insert into procurement.current_workbooks
-          (analysis_id, project_id, owner_id, snapshot, configuration, version, saved_at, saved_by, mutation_id, request_signature)
-          values (${s.analysisId}, ${s.projectId}, ${actor}, ${snapshot}, ${configuration}, ${w.version}, ${w.savedAt}, ${actor}, ${request.mutationId}, ${signature})
-          on conflict (analysis_id) do update set snapshot = excluded.snapshot, configuration = excluded.configuration,
+          (analysis_id, project_id, owner_id, data, version, saved_at, saved_by, mutation_id, request_signature)
+          values (${s.analysisId}, ${s.projectId}, ${actor}, ${data}, ${w.version}, ${w.savedAt}, ${actor}, ${request.mutationId}, ${signature})
+          on conflict (analysis_id) do update set data = excluded.data,
             version = excluded.version, saved_at = excluded.saved_at, saved_by = excluded.saved_by,
             mutation_id = excluded.mutation_id, request_signature = excluded.request_signature`;
         return next.outcome;

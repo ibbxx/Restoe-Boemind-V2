@@ -1,4 +1,35 @@
 import type { SaveRequest } from "../application/contracts.ts";
+import type { StableId } from "../domain/ids.ts";
+
+export interface SessionInfo { readonly actorId: StableId<"user"> | null }
+let sessionFlight: Promise<SessionInfo> | null = null;
+let refreshFlight: Promise<unknown> | null = null;
+let sessionController = new AbortController();
+
+export function invalidateSessionRequests() {
+  sessionController.abort();
+  sessionController = new AbortController();
+  sessionFlight = null;
+  refreshFlight = null;
+}
+
+// Share pending requests only; never retain an authenticated result after it settles.
+export function readSession(): Promise<SessionInfo> {
+  if (!sessionFlight) {
+    const flight = api<SessionInfo>("/api/session").finally(() => { if (sessionFlight === flight) sessionFlight = null; });
+    sessionFlight = flight;
+  }
+  return sessionFlight;
+}
+
+function refreshSession(): Promise<unknown> {
+  if (!refreshFlight) {
+    const flight = api("/api/session", { method: "POST", body: JSON.stringify({ operation: "REFRESH" }) }, false)
+      .finally(() => { if (refreshFlight === flight) refreshFlight = null; });
+    refreshFlight = flight;
+  }
+  return refreshFlight;
+}
 
 const messages: Record<string, string> = {
   INVALID_CREDENTIALS: "Email atau kata sandi salah.", UNAUTHENTICATED: "Sesi berakhir. Silakan masuk kembali.",
@@ -14,20 +45,31 @@ export class ApiError extends Error {
   constructor(code: string) { super(messages[code] ?? "Operasi gagal. Coba lagi."); this.code = code; }
 }
 export async function api<T>(url: string, init: RequestInit = {}, refresh = true): Promise<T> {
+  const sessionSignal = sessionController.signal;
   let response: Response;
-  try { response = await fetch(url, { ...init, cache: "no-store", signal: AbortSignal.timeout(30000),
+  try { response = await fetch(url, { ...init, cache: "no-store",
+    signal: AbortSignal.any([sessionSignal, AbortSignal.timeout(30000), ...(init.signal ? [init.signal] : [])]),
     headers: { "Content-Type": "application/json", ...init.headers } }); }
   catch (cause) {
+    if (sessionSignal.aborted) throw new ApiError("SESSION_CHANGED");
     if (cause instanceof Error && (cause.name === "TimeoutError" || cause.name === "AbortError")) {
       throw new Error("Permintaan terlalu lama. Perubahan yang belum disimpan tetap ada; coba lagi.");
     }
     throw new Error("Koneksi terputus. Perubahan yang belum disimpan tetap ada; coba lagi.");
   }
+  if (sessionSignal.aborted) throw new ApiError("SESSION_CHANGED");
   if (response.status === 401 && refresh) {
-    await api("/api/session", { method: "POST", body: JSON.stringify({ operation: "REFRESH" }) }, false);
+    await refreshSession();
+    if (sessionSignal.aborted) throw new ApiError("SESSION_CHANGED");
     return api<T>(url, init, false);
   }
-  const data = await response.json();
+  let data;
+  try { data = await response.json(); }
+  catch (cause) {
+    if (sessionSignal.aborted) throw new ApiError("SESSION_CHANGED");
+    throw cause;
+  }
+  if (sessionSignal.aborted) throw new ApiError("SESSION_CHANGED");
   if (!response.ok) throw new ApiError(data.code ?? "REQUEST_FAILED");
   return data as T;
 }

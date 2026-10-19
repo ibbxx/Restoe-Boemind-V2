@@ -7,7 +7,7 @@ import { evaluateNode } from "./evaluator.ts";
 import { affectedNodes, assertConfigurationVersions, captureConfiguration, relevantNodes } from "./graph.ts";
 import { operationalGraph } from "./inu-solver.ts";
 
-export const ENGINE_VERSION = "phase3-grammar2-fixed-decimal4-inu-cent-precision18-provisional";
+export const ENGINE_VERSION = "phase3-grammar2-fixed-decimal4-inu-cent-precision18-current-offer";
 const issuedRuns = new WeakSet<EngineRun>();
 
 export class FormulaEngine implements CalculationEngine {
@@ -61,7 +61,7 @@ export class FormulaEngine implements CalculationEngine {
     });
     for (const id of graph.order) {
       const node = graph.nodes.get(id)!;
-      const source = node.pinnedInput ?? (node.cell.source.kind === "INPUT" ? node.cell.source.input : null);
+      const source = node.cell.source.kind === "INPUT" ? node.cell.source.input : null;
       const assumeZero = source?.kind === "UNSET" && (snapshot.workbook ? numericCells.has(id) : node.unit !== null);
       const result = evaluateNode(node, provisionalResults, decimal, aggregates, assumeZero,
         new Set(node.dependencies.filter(dep => assumptions.get(dep)?.length)));

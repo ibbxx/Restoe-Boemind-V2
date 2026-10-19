@@ -1,5 +1,25 @@
 # Architecture
 
+## Cetak seluruh vendor — 2026-10-19
+
+Tombol cetak menyalin seluruh kolom vendor aktif Evaluasi Vendor sesuai urutan tampil, maksimal tiga vendor pada setiap halaman A4 landscape. Metadata proyek, uraian, hasil formula, total, dan catatan ikut dicetak; Konversi dan AHS dari vendor/profil yang dipilih diulang pada setiap halaman. Kolom yang tidak ditemukan menolak cetak, tanpa melewati vendor secara diam-diam. Salinan DOM dibersihkan melalui afterprint (termasuk pembatalan dialog) atau saat gagal. Worksheet, pilihan vendor, formula, dan persistence tidak berubah.
+
+Cetak langsung browser juga tidak menyembunyikan vendor yang tidak dipilih, tetapi pembagian per tiga vendor disiapkan oleh tombol cetak aplikasi. Konten vertikal panjang tetap diperkecil agar muat; keterbacaan, pagination fisik, pembatalan dialog dan cetak ulang perlu dicek manual di browser. Tes table-only mencakup 1/3/4/7/10/100 vendor, urutan, sel kosong, hasil formula/catatan, merge, penolakan kolom tidak valid, serta sumber yang tidak berubah.
+
+## Current-only tanpa arsip — refactor 2026-10-19
+
+Bagian ini menggantikan seluruh kontrak histori/legacy storage pada catatan lama di bawah. Runtime memakai tiga tabel: projects, analyses, current_workbooks. Setiap Analysis mempunyai satu row `data jsonb`; metadata Project/Analysis berada pada tabel indeks, konfigurasi disimpan satu kali, dan nilai manual vendor canonical berada pada offer. Cell storage mereferensikan offer/value; adapter mematerialisasi INPUT untuk editor/engine. Formula dan mapping hanya definisi aktif dengan stable ID; selection memakai offerId. Tidak ada offerRevisions, reviewContext, calculationRunRefs, atau ID versi formula/mapping di domain aktif.
+
+`20261019071911_current_only_procurement.sql` mengonversi current data dan menghapus dua belas tabel arsip/duplikat beserta dependensinya. Migration baru belum diterapkan ke cloud. Source SQL migration lama dipertahankan untuk rantai deployment; script backfill lama dihapus. Preview dan incremental cache tetap transient. Guard konflik/retry, RLS, Auth, TLS dan transaksi tetap berlaku. Laporan file, tabel, audit cloud baca-saja dan tes lokal ada di [PERSISTENCE_CURRENT_ONLY_AUDIT.md](./PERSISTENCE_CURRENT_ONLY_AUDIT.md).
+
+## Pemeriksaan sesi dan logo loading — 2026-10-19
+
+GET `/api/session` mengembalikan `{ actorId: null }` dengan HTTP 200 ketika kedua cookie sesi kosong, atau ketika access token ditolak dan tidak ada refresh cookie. Cookie tidak valid dibersihkan; gangguan Auth tetap HTTP 503. Jika refresh cookie tersedia, kegagalan access token tetap HTTP 401 agar client memakai POST REFRESH dengan pemeriksaan origin yang ada. Login salah serta akses workbook tanpa autentikasi tetap ditolak; status anonim endpoint sesi bukan akses data.
+
+Client menggabungkan hanya GET sesi dan POST refresh yang sedang berjalan, tanpa cache hasil sesi setelah selesai. Perubahan akun, logout, sesi lintas tab, atau sesi berakhir membatalkan request lama dengan AbortController; hasil/pesan lama diabaikan. Workspace menerima actorId nullable, berhenti sebelum meminta proyek saat anonim, dan mempertahankan draft saat perlu login ulang. Startup memakai pemeriksaan epoch dan cleanup komponen tanpa mematikan Strict Mode. Gambar fallback logo memakai loading eager; renderer Canvas dan siklus animasi tetap sama.
+
+Typecheck, lint berkas terkait, serta git diff --check selesai tanpa error. Tidak menjalankan pengujian aplikasi/browser otomatis. Penerimaan manual: tab tanpa cookie hanya melakukan satu GET sesi 200 tanpa POST refresh/proyek; sesi valid membuka proyek; access token kedaluwarsa dengan refresh valid pulih; refresh ditolak menampilkan login tanpa membuang draft; logout/pergantian akun/lintas tab tidak menerima respons lama; warning lazy LCP pada logo tidak muncul lagi. Kecepatan dan kelancaran visual belum diukur.
+
 ## Penyimpanan terbaru — keputusan 2026-10-19
 
 Bagian ini menggantikan penjelasan histori/repository/CALCULATE pada baseline lama di bawah. Runtime sekarang memakai `PostgresWorkbookRepository` dan `procurement.current_workbooks`: satu snapshot, konfigurasi engine lengkap (termasuk legacy v2), token versi, metadata simpan, serta mutation ID/signature terakhir per Analysis. SAVE memvalidasi snapshot/configuration, memakai transaksi dan lock Project/Analysis, menolak versi tertinggal, serta memperbarui satu baris. Signature SHA-256 menghindari penggandaan payload sebagai metadata retry. Retry yang sudah tertinggal mendapat konflik; respons workspace/sesi lama diabaikan. Role runtime hanya mengakses projects, analyses, dan current_workbooks dengan RLS/claim guard yang tetap diperiksa setiap transaksi.

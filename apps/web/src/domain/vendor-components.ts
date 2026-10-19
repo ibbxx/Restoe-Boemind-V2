@@ -94,7 +94,7 @@ export function removeVendorComponent(snapshot: WorkbookSnapshot, componentId: s
     const address = displayCellId(formula.targetCellId, snapshot);
     requireCondition(totalIds.has(formula.targetCellId), `Uraian masih dipakai formula ${address}; ubah referensinya terlebih dahulu.`);
     const ast = removeAddend(parseFormula(formula.expression), removing, address) ?? { kind: "number" as const, text: "0" };
-    return { ...formula, versionId: id<"formula-version">(), expression: formulaText(ast), referenceCellIds: [...new Set(references(ast, aggregateId =>
+    return { ...formula, expression: formulaText(ast), referenceCellIds: [...new Set(references(ast, aggregateId =>
       configuration.aggregates.find(aggregate => aggregate.id === aggregateId)?.memberCellIds ?? []))].map(id => parseStableId<"cell">(id)) };
   });
   const worksheets = snapshot.worksheets.map(w => ({ ...w, tables: w.tables.flatMap(table => {
@@ -112,14 +112,13 @@ export function removeVendorComponent(snapshot: WorkbookSnapshot, componentId: s
   const retainedFormulaIds = new Set(formulas.map(formula => formula.id));
   const profiles = { ...snapshot.profiles };
   for (const profile of ["INU", "SOLAR_BAWAH"] as const) profiles[profile] = { ...profiles[profile],
-    cellIds: profiles[profile].cellIds.filter(id => !removing.has(id)), formulaIds: profiles[profile].formulaIds.filter(id => retainedFormulaIds.has(id)),
-    reviewContext: profiles[profile].reviewContext?.inputCellIds.some(id => removing.has(id)) ? null : profiles[profile].reviewContext };
+    cellIds: profiles[profile].cellIds.filter(id => !removing.has(id)), formulaIds: profiles[profile].formulaIds.filter(id => retainedFormulaIds.has(id)) };
   const nextConfiguration = { ...configuration, version: id<"policy">(), units: configuration.units.filter(unit => !removing.has(unit.cellId)),
     selectionDependentCellIds: configuration.selectionDependentCellIds.filter(id => !removing.has(id)) };
   const updated = changeWorkbook(snapshot, { worksheets, formulas, profiles, mappings: snapshot.mappings.filter(mapping => !removing.has(mapping.sourceCellId) && !removing.has(mapping.targetCellId)),
     ...(snapshot.workbook ? { workbook: { ...snapshot.workbook, bindings: snapshot.workbook.bindings.filter(binding => !removing.has(binding.cellId)), configuration: nextConfiguration } } : {}) });
   // Refresh current vendor records before legacy materialization can recreate deleted rows.
-  return refreshCurrentOffers(updated, nextConfiguration);
+  return refreshCurrentOffers(updated);
 }
 
 export function addVendorComponent(snapshot: WorkbookSnapshot, rawName: string) {

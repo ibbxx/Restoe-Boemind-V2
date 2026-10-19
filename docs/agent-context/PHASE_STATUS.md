@@ -1,5 +1,7 @@
 # Phase Status
 
+Pembaruan terbatas 2026-10-19: refactor current-only mempunyai migration destruktif baru yang diverifikasi PostgreSQL 17 lokal; cloud belum menerimanya. Tes mencakup Save berulang/retry/race/stale, reload, RLS, schema tiga tabel, serta kesetaraan kalkulasi setelah konversi current data. Ini tidak menyatakan seluruh bisnis AHS atau browser sudah terverifikasi dan tidak memulai fase baru. Lihat PERSISTENCE_CURRENT_ONLY_AUDIT.md.
+
 Status diperbarui 2026-10-15. Fase 4 tetap COMPLETE berdasarkan bukti cloud sebelumnya;
 Fase 5 dimulai melalui instruksi eksplisit pengguna. Status teknis tidak mengesahkan kebijakan bisnis.
 

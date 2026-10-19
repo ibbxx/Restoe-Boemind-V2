@@ -30,10 +30,9 @@ export interface DynamicWorkbook {
   readonly tables: readonly SheetPresentation[];
   readonly cells: readonly CellPresentation[];
   readonly bindings: readonly { readonly profile: Profile; readonly key: string; readonly cellId: StableId<"cell"> }[];
-  readonly offers: readonly { readonly columnId: StableId<"column">; readonly baseCellId: StableId<"cell">; readonly nameCellId: StableId<"cell">; readonly offerId: StableId<"offer">; readonly revisionId: StableId<"offer-revision">; readonly pattern: "C" | "D" | "E" }[];
-  readonly selections: Readonly<Record<Profile, StableId<"offer-revision"> | null>>;
+  readonly offers: readonly { readonly columnId: StableId<"column">; readonly baseCellId: StableId<"cell">; readonly nameCellId: StableId<"cell">; readonly offerId: StableId<"offer">; readonly pattern: "C" | "D" | "E" }[];
+  readonly selections: Readonly<Record<Profile, StableId<"offer"> | null>>;
 }
-
 // Raw input is retained for drafts; its business validation belongs to a configured policy.
 export type CellInput =
   | { readonly kind: "UNSET" }
@@ -80,7 +79,6 @@ export interface WorksheetSnapshot {
 
 export interface FormulaDefinition {
   readonly id: StableId<"formula">;
-  readonly versionId: StableId<"formula-version">;
   readonly targetCellId: StableId<"cell">;
   readonly expression: string;
   // Declared IDs only; parsing expression dependencies belongs to Phase 3.
@@ -97,11 +95,9 @@ export interface FormulaDefinition {
 export interface HppBase {
   readonly origin: "MANUAL" | "CONVERSION_COST";
   readonly cellId: StableId<"cell">;
-  readonly contextRunId: StableId<"run"> | null;
 }
 
 export interface ProfileSnapshot {
-  readonly reviewContext: ReviewContext | null;
   readonly hppBase: HppBase;
   readonly cellIds: readonly StableId<"cell">[];
   readonly formulaIds: readonly StableId<"formula">[];
@@ -119,14 +115,13 @@ export interface WorkbookSnapshot {
   readonly project: Project;
   readonly analysisId: StableId<"analysis">;
   readonly analysis: AnalysisState;
-  readonly mappings: readonly MappingVersion[];
-  readonly selectedOfferRevisionId: StableId<"offer-revision"> | null;
+  readonly mappings: readonly MappingDefinition[];
+  readonly selectedOfferId: StableId<"offer"> | null;
   readonly activeProfile: Profile;
   readonly profiles: Readonly<Record<Profile, ProfileSnapshot>>;
   readonly worksheets: readonly WorksheetSnapshot[];
   readonly formulas: readonly FormulaDefinition[];
   readonly policy: CalculationPolicyRef;
-  readonly calculationRunRefs: readonly CalculationRunReference[];
 }
 
 export interface Project {
@@ -151,12 +146,6 @@ export interface Offer {
   readonly analysisId: StableId<"analysis">;
   readonly vendorId: StableId<"vendor">;
   readonly label: string;
-}
-
-export interface OfferRevision {
-  readonly id: StableId<"offer-revision">;
-  readonly offerId: StableId<"offer">;
-  readonly revisionNumber: number;
   readonly values: readonly {
     readonly id: StableId<"offer-value">;
     readonly label: string;
@@ -168,53 +157,11 @@ export interface AnalysisState {
   readonly analysis: Analysis;
   readonly vendors: readonly AnalysisVendor[];
   readonly offers: readonly Offer[];
-  readonly offerRevisions: readonly OfferRevision[];
 }
-
-// Historical reference metadata is not proof that a calculation was correct.
-export interface CalculationRunReference {
-  readonly id: StableId<"run">;
-  readonly snapshotId: StableId<"snapshot">;
-  readonly profile: Profile;
-  readonly selectedOfferRevisionId: StableId<"offer-revision"> | null;
-  readonly engineVersion: string;
-  readonly policyVersionId: StableId<"policy"> | null;
-  readonly status: CalculationStatus;
-}
-
-export interface EvaluatedCellValue {
-  readonly cellId: StableId<"cell">;
-  readonly value:
-    | { readonly kind: "DECIMAL"; readonly canonical: string }
-    | { readonly kind: "TEXT"; readonly text: string };
-}
-
-// These are run states, not the still-unapproved EMPTY/ZERO/MISSING cell semantics.
-export type CalculationRun = {
-  readonly id: StableId<"run">;
-  readonly snapshotId: StableId<"snapshot">;
-  readonly engineVersion: string;
-} & (
-  | {
-      readonly status: "NOT_EVALUATED" | "NONFINAL" | "ERROR";
-      readonly policyVersionId: StableId<"policy"> | null;
-      readonly diagnostics: readonly string[];
-    }
-  | {
-      readonly status: "VALID";
-      readonly policyVersionId: StableId<"policy">;
-      readonly values: readonly EvaluatedCellValue[];
-    }
-);
-
-export type CalculationStatus = CalculationRun["status"];
-
-export type ValidCalculationRun = Extract<CalculationRun, { readonly status: "VALID" }>;
 
 // Structural metadata only; expressions and units do not establish business validity.
-export interface MappingVersion {
+export interface MappingDefinition {
   readonly id: StableId<"mapping">;
-  readonly versionId: StableId<"mapping-version">;
   readonly analysisId: StableId<"analysis">;
   readonly scope: Profile | "SHARED";
   readonly sourceCellId: StableId<"cell">;
@@ -226,20 +173,7 @@ export interface MappingVersion {
   readonly status: "DRAFT" | "ACTIVE" | "REJECTED" | "NEEDS_REVIEW";
   readonly provenance: {
     readonly actorId: StableId<"user">;
-    readonly changeEventId: StableId<"change-event">;
     readonly sourceRef: string | null;
     readonly reason: string | null;
   };
-}
-
-// Explicit watched inputs, not inferred formula dependencies or proof of calculation.
-export interface ReviewContext {
-  readonly inputCellIds: readonly StableId<"cell">[];
-  readonly snapshotId: StableId<"snapshot">;
-  readonly profile: Profile;
-  readonly selectedOfferRevisionId: StableId<"offer-revision"> | null;
-  readonly mappingVersionIds: readonly StableId<"mapping-version">[];
-  readonly runId: StableId<"run"> | null;
-  readonly freshness: "CURRENT" | "STALE";
-  readonly decisionStatus: "DRAFT" | "CONFIRMED" | "NEEDS_REVIEW";
 }

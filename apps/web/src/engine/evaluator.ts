@@ -82,7 +82,7 @@ export function evaluateNode(node: GraphNode, results: ReadonlyMap<string, NodeR
   }
   try {
     let value: Value;
-    const source = node.pinnedInput ? { kind: "INPUT" as const, input: node.pinnedInput } : node.cell.source;
+    const source = node.cell.source;
     if (source.kind === "INPUT") {
       if (source.input.kind === "UNSET") {
         if (!assumeEmptyZero || node.unit === null) throw new EvaluationFailure("EMPTY", "EMPTY_INPUT");

@@ -1,10 +1,10 @@
-import type { CalculationRun, WorkbookSnapshot } from "../domain/contracts.ts";
+import type { WorkbookSnapshot } from "../domain/contracts.ts";
 import type { StableId } from "../domain/ids.ts";
 import type { DecimalPolicy } from "./decimal.ts";
 
 export interface CalculationEngine {
   readonly version: string;
-  evaluate(snapshot: WorkbookSnapshot): CalculationRun;
+  evaluate(snapshot: WorkbookSnapshot): EngineRun;
 }
 
 // Empty dimensions mean dimensionless; absent metadata is never assumed dimensionless.

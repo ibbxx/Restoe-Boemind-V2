@@ -13,7 +13,7 @@ Bedakan fakta kode/artefak, keputusan pengguna/PRD yang terkonfirmasi, dan keput
 
 Pertahankan pemilihan vendor/offer manual, Analysis dan Project yang tidak dicampur tanpa keputusan, profil INU dan Solar Bawah independen, HPP Harga Dasar AHS mengikuti Biaya Harga Dasar Konversi profilnya, Harga Jual AHS manual, stable ID, penolakan simpan dari versi tertinggal tanpa overwrite/merge, serta tidak ada auto-award atau compliance gate.
 
-Keputusan pengguna 2026-10-19 menggantikan kewajiban histori pada instruksi sebelumnya: setiap Analysis hanya mempunyai satu kondisi tersimpan terbaru beserta konfigurasi perhitungan. Jangan membuat arsip revisi, change event before/after, atau arsip hasil hitung baru. Hasil engine bersifat sementara. Token versi dan mutation ID terakhir adalah pengaman konflik/retry, bukan histori. Arsip lama tidak diakses runtime baru dan tidak boleh dihapus fisik tanpa instruksi terpisah. Migrasi skema dan backfill disiapkan terpisah; jangan menjalankannya otomatis saat startup.
+Keputusan pengguna 2026-10-19: setiap Analysis hanya mempunyai satu kondisi tersimpan beserta konfigurasi perhitungan. Tidak ada revisions, change events, offer revisions, workbook archive atau calculation history. Pengguna mengizinkan penghapusan fisik histori lama melalui migration baru. Tabel aktif hanya projects, analyses, current_workbooks; offer/formula/mapping aktif berada dalam satu payload, tanpa duplikasi konfigurasi/nilai vendor. Hasil engine bersifat sementara. Token versi dan mutation ID terakhir adalah pengaman konflik/retry, bukan histori. Migration hanya dibuat dan diverifikasi lokal sesuai pilihan pengguna; penerapan cloud belum diizinkan. Jangan menjalankan migration otomatis saat startup.
 
 ## Batas fase
 
@@ -23,6 +23,6 @@ Perubahan dokumentasi boleh berada di `docs/agent-context/` dan root `AGENTS.md`
 
 ## Verifikasi
 
-Pengguna meminta pengujian aplikasi dilakukan manual oleh pengguna. Jangan membuat atau menjalankan script test, fixture, test runner, atau pengujian browser otomatis. Script pengujian dihapus atas instruksi pengguna. Periksa diff, `git diff --check`, dan status git; jangan mengklaim pengujian lulus jika tidak dijalankan.
+Instruksi terbaru untuk refactor persistence secara eksplisit meminta tes Save berulang, reload dan ketiadaan histori. Tes domain/API/PostgreSQL lokal terisolasi diizinkan untuk pekerjaan ini; jangan memakai cloud sebagai target sintetis. Pengujian browser/visual tetap manual oleh pengguna. Periksa diff, `git diff --check`, dan status git; jangan mengklaim pengujian lulus jika tidak dijalankan.
 
 UI tetap mengikuti acuan Stitch. Klik sel menampilkan alamat dan formula berukuran normal di formula bar seperti Excel; jangan menaruh label kode kecil di dalam setiap sel. Semua sel Evaluasi Vendor dapat diisi nilai atau rumus pengguna, termasuk Harga Dasar, nama vendor, PPH, label, metadata, total, dan catatan (instruksi terbaru pengguna). PPH tetap kosong/manual pada template awal, tetapi rumus yang dimasukkan pengguna tidak boleh dihapus otomatis. HPP Harga Dasar mengikuti Biaya Konversi, Harga Jual · Harga Dasar AHS diisi manual oleh tim, dan Harga Jual Setelah Pajak dihitung otomatis.

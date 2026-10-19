@@ -1,4 +1,4 @@
-import type { CellInput, MappingVersion, ProfileSnapshot, ReviewContext, WorkbookSnapshot } from "./contracts.ts";
+import type { CellInput, MappingDefinition, ProfileSnapshot, WorkbookSnapshot } from "./contracts.ts";
 import { parseStableId } from "./ids.ts";
 import type { EntityKind } from "./ids.ts";
 import { parseProfile, PROFILES } from "./profiles.ts";
@@ -49,46 +49,32 @@ export function parseCellInput(value: unknown): CellInput {
 }
 
 function parseProfileState(value: unknown): ProfileSnapshot {
-  const p = object(value, ["hppBase", "cellIds", "formulaIds", "reviewContext"]);
-  const h = object(p.hppBase, ["origin", "cellId", "contextRunId"]);
-  return { hppBase: { origin: choice(h.origin, ["MANUAL", "CONVERSION_COST"]), cellId: parseStableId<"cell">(h.cellId),
-    contextRunId: nullableId<"run">(h.contextRunId) },
+  const p = object(value, ["hppBase", "cellIds", "formulaIds"]);
+  const h = object(p.hppBase, ["origin", "cellId"]);
+  return { hppBase: { origin: choice(h.origin, ["MANUAL", "CONVERSION_COST"]), cellId: parseStableId<"cell">(h.cellId) },
     cellIds: array(p.cellIds).map(id => parseStableId<"cell">(id)),
-    formulaIds: array(p.formulaIds).map(id => parseStableId<"formula">(id)),
-    reviewContext: p.reviewContext === null ? null : parseReviewContext(p.reviewContext) };
+    formulaIds: array(p.formulaIds).map(id => parseStableId<"formula">(id)) };
 }
 
-export function parseReviewContext(value: unknown): ReviewContext {
-  const r = object(value, ["snapshotId", "profile", "selectedOfferRevisionId", "mappingVersionIds", "inputCellIds",
-    "runId", "freshness", "decisionStatus"]);
-  return { snapshotId: parseStableId<"snapshot">(r.snapshotId), profile: parseProfile(r.profile),
-    selectedOfferRevisionId: nullableId<"offer-revision">(r.selectedOfferRevisionId),
-    mappingVersionIds: array(r.mappingVersionIds).map(id => parseStableId<"mapping-version">(id)),
-    inputCellIds: array(r.inputCellIds).map(id => parseStableId<"cell">(id)), runId: nullableId<"run">(r.runId),
-    freshness: choice(r.freshness, ["CURRENT", "STALE"]), decisionStatus: choice(r.decisionStatus, ["DRAFT", "CONFIRMED", "NEEDS_REVIEW"]) };
-}
-
-export function parseMappingVersion(value: unknown): MappingVersion {
-  const m = object(value, ["id", "versionId", "analysisId", "scope", "sourceCellId", "targetCellId", "sourceComponent",
+export function parseMappingDefinition(value: unknown): MappingDefinition {
+  const m = object(value, ["id", "analysisId", "scope", "sourceCellId", "targetCellId", "sourceComponent",
     "transformExpression", "sourceUnit", "targetUnit", "status", "provenance"]);
-  const p = object(m.provenance, ["actorId", "changeEventId", "sourceRef", "reason"]);
-  return { id: parseStableId<"mapping">(m.id), versionId: parseStableId<"mapping-version">(m.versionId),
-    analysisId: parseStableId<"analysis">(m.analysisId), scope: choice(m.scope, ["INU", "SOLAR_BAWAH", "SHARED"]),
+  const p = object(m.provenance, ["actorId", "sourceRef", "reason"]);
+  return { id: parseStableId<"mapping">(m.id), analysisId: parseStableId<"analysis">(m.analysisId), scope: choice(m.scope, ["INU", "SOLAR_BAWAH", "SHARED"]),
     sourceCellId: parseStableId<"cell">(m.sourceCellId), targetCellId: parseStableId<"cell">(m.targetCellId),
     sourceComponent: text(m.sourceComponent, true), transformExpression: m.transformExpression === null ? null : text(m.transformExpression, true),
     sourceUnit: text(m.sourceUnit, true), targetUnit: text(m.targetUnit, true),
     status: choice(m.status, ["DRAFT", "ACTIVE", "REJECTED", "NEEDS_REVIEW"]),
-    provenance: { actorId: parseStableId<"user">(p.actorId), changeEventId: parseStableId<"change-event">(p.changeEventId),
-      sourceRef: p.sourceRef === null ? null : text(p.sourceRef, true), reason: p.reason === null ? null : text(p.reason, true) } };
+    provenance: { actorId: parseStableId<"user">(p.actorId), sourceRef: p.sourceRef === null ? null : text(p.sourceRef, true), reason: p.reason === null ? null : text(p.reason, true) } };
 }
 
 // Structural validation only: raw numeric text and expressions have no arithmetic policy here.
 export function parseSnapshot(value: unknown): WorkbookSnapshot {
   const version = (value as { schemaVersion?: unknown } | null)?.schemaVersion;
-  const root = object(value, ["schemaVersion", "id", "projectId", "project", "analysisId", "analysis", "mappings", "selectedOfferRevisionId",
-    "activeProfile", "profiles", "worksheets", "formulas", "policy", "calculationRunRefs", ...(version === 3 ? ["workbook"] : [])]);
+  const root = object(value, ["schemaVersion", "id", "projectId", "project", "analysisId", "analysis", "mappings", "selectedOfferId",
+    "activeProfile", "profiles", "worksheets", "formulas", "policy", ...(version === 3 ? ["workbook"] : [])]);
   requireCondition(version === 2 || version === 3, "Unsupported snapshot schema version; legacy ownership must be migrated explicitly.");
-  const state = object(root.analysis, ["analysis", "vendors", "offers", "offerRevisions"]);
+  const state = object(root.analysis, ["analysis", "vendors", "offers"]);
   const analysis = object(state.analysis, ["id", "projectId", "name"]);
   const project = object(root.project, ["id", "name"]);
   const profiles = object(root.profiles, PROFILES);
@@ -102,7 +88,7 @@ export function parseSnapshot(value: unknown): WorkbookSnapshot {
     projectId: parseStableId<"project">(root.projectId),
     project: { id: parseStableId<"project">(project.id), name: text(project.name, true) },
     analysisId: parseStableId<"analysis">(root.analysisId),
-    mappings: array(root.mappings).map(parseMappingVersion),
+    mappings: array(root.mappings).map(parseMappingDefinition),
     analysis: {
       analysis: { id: parseStableId<"analysis">(analysis.id), projectId: parseStableId<"project">(analysis.projectId), name: text(analysis.name, true) },
       vendors: array(state.vendors).map(value => {
@@ -110,22 +96,15 @@ export function parseSnapshot(value: unknown): WorkbookSnapshot {
         return { id: parseStableId<"vendor">(v.id), analysisId: parseStableId<"analysis">(v.analysisId), name: text(v.name, true) };
       }),
       offers: array(state.offers).map(value => {
-        const o = object(value, ["id", "analysisId", "vendorId", "label"]);
+        const o = object(value, ["id", "analysisId", "vendorId", "label", "values"]);
         return { id: parseStableId<"offer">(o.id), analysisId: parseStableId<"analysis">(o.analysisId),
-          vendorId: parseStableId<"vendor">(o.vendorId), label: text(o.label) };
-      }),
-      offerRevisions: array(state.offerRevisions).map(value => {
-        const r = object(value, ["id", "offerId", "revisionNumber", "values"]);
-        requireCondition(Number.isSafeInteger(r.revisionNumber) && typeof r.revisionNumber === "number" &&
-          r.revisionNumber > 0, "Offer revision number must be a positive safe integer.");
-        return { id: parseStableId<"offer-revision">(r.id), offerId: parseStableId<"offer">(r.offerId),
-          revisionNumber: r.revisionNumber, values: array(r.values).map(value => {
+          vendorId: parseStableId<"vendor">(o.vendorId), label: text(o.label), values: array(o.values).map(value => {
             const v = object(value, ["id", "label", "input"]);
             return { id: parseStableId<"offer-value">(v.id), label: text(v.label), input: parseCellInput(v.input) };
           }) };
       }),
     },
-    selectedOfferRevisionId: nullableId<"offer-revision">(root.selectedOfferRevisionId),
+    selectedOfferId: nullableId<"offer">(root.selectedOfferId),
     activeProfile: parseProfile(root.activeProfile),
     profiles: { INU: parseProfileState(profiles.INU), SOLAR_BAWAH: parseProfileState(profiles.SOLAR_BAWAH) },
     worksheets: array(root.worksheets).map(value => {
@@ -181,11 +160,10 @@ export function parseSnapshot(value: unknown): WorkbookSnapshot {
         }) };
     }),
     formulas: array(root.formulas).map(value => {
-      const f = object(value, ["id", "versionId", "targetCellId", "expression", "referenceCellIds", "sourceKind", "activation", "provenance"]);
+      const f = object(value, ["id", "targetCellId", "expression", "referenceCellIds", "sourceKind", "activation", "provenance"]);
       const p = f.provenance === null ? null : object(f.provenance, ["workbookSha256", "sheet", "address"]);
       if (p) requireCondition(typeof p.workbookSha256 === "string" && /^[0-9a-f]{64}$/.test(p.workbookSha256), "Invalid provenance hash.");
-      return { id: parseStableId<"formula">(f.id), versionId: parseStableId<"formula-version">(f.versionId),
-        targetCellId: parseStableId<"cell">(f.targetCellId), expression: text(f.expression, true),
+      return { id: parseStableId<"formula">(f.id), targetCellId: parseStableId<"cell">(f.targetCellId), expression: text(f.expression, true),
         referenceCellIds: array(f.referenceCellIds).map(id => parseStableId<"cell">(id)),
         sourceKind: choice(f.sourceKind, ["WORKBOOK_SOURCE", "OPERATIONAL_OVERRIDE", "MAPPING"]),
         activation: choice(f.activation, ["DRAFT", "ACTIVE"]),
@@ -193,13 +171,6 @@ export function parseSnapshot(value: unknown): WorkbookSnapshot {
     }),
     policy: policyStatus === "UNCONFIGURED" ? { status: policyStatus }
       : { status: policyStatus, versionId: parseStableId<"policy">(policyObject.versionId) },
-    calculationRunRefs: array(root.calculationRunRefs).map(value => {
-      const r = object(value, ["id", "snapshotId", "profile", "selectedOfferRevisionId", "engineVersion", "policyVersionId", "status"]);
-      return { id: parseStableId<"run">(r.id), snapshotId: parseStableId<"snapshot">(r.snapshotId),
-        profile: parseProfile(r.profile), selectedOfferRevisionId: nullableId<"offer-revision">(r.selectedOfferRevisionId),
-        engineVersion: text(r.engineVersion, true), policyVersionId: nullableId<"policy">(r.policyVersionId),
-        status: choice(r.status, ["NOT_EVALUATED", "NONFINAL", "ERROR", "VALID"]) };
-    }),
   };
   validateReferences(snapshot);
   validateDynamicReferences(snapshot);
@@ -221,19 +192,16 @@ function validateReferences(s: WorkbookSnapshot) {
   const tables = s.worksheets.flatMap(w => w.tables);
   const cells = tables.flatMap(t => t.cells);
   const allIds: readonly string[] = [s.id, s.project.id, s.analysisId, ...p.vendors.map(v => v.id), ...p.offers.map(o => o.id),
-    ...p.offerRevisions.flatMap(r => [r.id, ...r.values.map(v => v.id)]),
+    ...p.offers.flatMap(r => r.values.map(v => v.id)),
     ...s.worksheets.map(w => w.id), ...tables.flatMap(t => [t.id, ...t.rows.map(r => r.id), ...t.columns.map(c => c.id), ...t.merges.map(m => m.id)]),
-    ...cells.map(c => c.id), ...s.formulas.flatMap(f => [f.id, f.versionId]), ...s.calculationRunRefs.map(r => r.id),
-    ...s.mappings.flatMap(m => [m.id, m.versionId])];
+    ...cells.map(c => c.id), ...s.formulas.map(f => f.id),
+    ...s.mappings.map(m => m.id)];
   unique(allIds, "entity inventory");
-  const revisions = new Set(p.offerRevisions.map(r => r.id));
   const vendors = new Set(p.vendors.map(v => v.id));
   const offers = new Set(p.offers.map(o => o.id));
   p.vendors.forEach(v => requireCondition(v.analysisId === s.analysisId, "Vendor belongs to another analysis."));
   p.offers.forEach(o => requireCondition(o.analysisId === s.analysisId && vendors.has(o.vendorId), "Invalid offer vendor/analysis reference."));
-  p.offerRevisions.forEach(r => requireCondition(offers.has(r.offerId), "Invalid offer revision reference."));
-  unique(p.offerRevisions.map(r => r.offerId + ":" + r.revisionNumber), "offer revision number");
-  requireCondition(s.selectedOfferRevisionId === null || revisions.has(s.selectedOfferRevisionId), "Selected revision does not exist.");
+  requireCondition(s.selectedOfferId === null || offers.has(s.selectedOfferId), "Selected activeOffer does not exist.");
   for (const t of tables) {
     sameMembers(t.rowOrder, t.rows.map(r => r.id), "row order");
     sameMembers(t.columnOrder, t.columns.map(c => c.id), "column order");
@@ -285,31 +253,5 @@ function validateReferences(s: WorkbookSnapshot) {
       requireCondition(costId && formula?.expression === `@{${costId}}` && formula.referenceCellIds.length === 1 &&
         formula.referenceCellIds[0] === costId, "HPP must follow the conversion cost for its own profile.");
     }
-    const context = state.hppBase.contextRunId;
-    requireCondition(context === null || s.calculationRunRefs.some(r => r.id === context && r.profile === profile), "Invalid HPP run context.");
-    const review = state.reviewContext;
-    if (review) {
-      requireCondition(review.profile === profile, "Cross-profile review context.");
-      unique(review.inputCellIds, "review inputs");
-      unique(review.mappingVersionIds, "review mappings");
-      requireCondition(review.selectedOfferRevisionId === null || revisions.has(review.selectedOfferRevisionId), "Missing reviewed offer revision.");
-      review.inputCellIds.forEach(id => {
-        const cell = byCell.get(id);
-        requireCondition(cell?.source.kind === "INPUT" && (cell.scope === profile || cell.scope === "SHARED"), "Invalid reviewed input scope.");
-      });
-      requireCondition(review.runId === null || s.calculationRunRefs.some(r => r.id === review.runId && r.profile === profile), "Invalid reviewed run.");
-      requireCondition(review.freshness !== "STALE" || review.decisionStatus === "NEEDS_REVIEW", "Stale context requires review.");
-      if (review.freshness === "CURRENT") {
-        requireCondition(review.selectedOfferRevisionId === (s.workbook ? s.workbook.selections[profile] : s.selectedOfferRevisionId), "Current review selection mismatch.");
-        review.mappingVersionIds.forEach(id => requireCondition(s.mappings.some(m => m.versionId === id &&
-          (m.scope === profile || m.scope === "SHARED")), "Invalid current review mapping."));
-      }
-    }
   }
-  s.calculationRunRefs.forEach(r => {
-    requireCondition(r.selectedOfferRevisionId === null || revisions.has(r.selectedOfferRevisionId), "Run selected revision does not exist.");
-    requireCondition(r.status !== "VALID" || r.policyVersionId !== null, "Valid run reference requires a policy version.");
-    requireCondition(r.policyVersionId === null || !allIds.includes(r.policyVersionId), "Run policy ID is another entity kind.");
-    requireCondition(!allIds.includes(r.snapshotId) || r.snapshotId === s.id, "Run snapshot ID is another entity kind.");
-  });
 }

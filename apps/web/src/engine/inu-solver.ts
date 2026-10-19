@@ -117,7 +117,7 @@ export function operationalGraph(snapshot: WorkbookSnapshot, configuration: Engi
     if (required.has(id)) return;
     required.add(id);
     const node = graph.nodes.get(id);
-    if (!node?.pinnedInput) node?.dependencies.forEach(requireSupplier);
+    node?.dependencies.forEach(requireSupplier);
   }
   if (supplierId) requireSupplier(supplierId);
   let evaluated = 0;
@@ -136,7 +136,7 @@ export function operationalGraph(snapshot: WorkbookSnapshot, configuration: Engi
   // The active profile selection is the UI's canonical choice. Older dynamic
   // snapshots may only have workbook.selections populated, so keep that as a
   // compatibility fallback instead of making INU appear incomplete.
-  const selected = snapshot.selectedOfferRevisionId ?? w?.selections.INU ?? null;
+  const selected = snapshot.selectedOfferId ?? w?.selections.INU ?? null;
   const lower = decimal.parse("50"), upper = decimal.parse("51");
   let limits = w?.solver ? { minimum: decimal.parse(w.solver.minimum), maximum: decimal.parse(w.solver.maximum), step: decimal.parse(w.solver.step) } : null;
   if (!limits && selected && increasing) {

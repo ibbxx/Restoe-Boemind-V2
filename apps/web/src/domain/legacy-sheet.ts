@@ -44,16 +44,16 @@ export function legacyVendorCell(s: WorkbookSnapshot, offerId: string, label: st
     t.rows.some(r => r.id === c.rowId && r.label.endsWith(`|vendor:${offerId}:${label}`)))).at(0);
 }
 
-// Materialize visible legacy slots once, retaining existing cells, formulas and immutable offer history.
+// Materialize visible legacy slots once, retaining existing cells, formulas and current vendor inputs.
 export function prepareLegacySheet(s: WorkbookSnapshot): WorkbookSnapshot {
   if (s.workbook) return s;
   const unoffered = s.analysis.vendors.filter(v => !s.analysis.offers.some(o => o.vendorId === v.id));
   const vendors = [...s.analysis.vendors], offers = [...s.analysis.offers];
-  for (const vendor of unoffered) offers.push({ id: id<"offer">(), analysisId: s.analysisId, vendorId: vendor.id, label: vendor.name });
+  for (const vendor of unoffered) offers.push({ id: id<"offer">(), analysisId: s.analysisId, vendorId: vendor.id, label: vendor.name, values: [] });
   while (offers.length < 3) {
     const vendor = { id: id<"vendor">(), analysisId: s.analysisId, name: `Vendor ${offers.length + 1}` };
     vendors.push(vendor);
-    offers.push({ id: id<"offer">(), analysisId: s.analysisId, vendorId: vendor.id, label: vendor.name });
+    offers.push({ id: id<"offer">(), analysisId: s.analysisId, vendorId: vendor.id, label: vendor.name, values: [] });
   }
   if (offers.length !== s.analysis.offers.length) s = changeWorkbook(s, { analysis: { ...s.analysis, vendors, offers } });
   const additions = new Map<string, TableSnapshot[]>();
@@ -67,9 +67,7 @@ export function prepareLegacySheet(s: WorkbookSnapshot): WorkbookSnapshot {
     additions.set(stage, [...(additions.get(stage) ?? []), table]);
     return cell;
   };
-  const latestRevision = (offerId: string) => s.analysis.offerRevisions.filter(r => r.offerId === offerId).reduce<(typeof s.analysis.offerRevisions)[number] | undefined>(
-    (latest, r) => !latest || r.revisionNumber > latest.revisionNumber ? r : latest, undefined);
-  const extraLabels = [...new Set(s.analysis.offers.flatMap(offer => latestRevision(offer.id)?.values.map(v => v.label) ?? []))]
+  const extraLabels = [...new Set(s.analysis.offers.flatMap(offer => offer.values.map(v => v.label)))]
     .filter(label => !label.startsWith("formula:") && ![...vendorComponentLabels, "Nama vendor", "Notes"].some(known => known.toLocaleLowerCase("id-ID") === label.toLocaleLowerCase("id-ID")));
   const extraRowNumbers = new Map(extraLabels.map((label, index) => {
     const existing = s.analysis.offers.map(offer => legacyVendorCell(s, offer.id, label)).find(Boolean);
@@ -93,8 +91,6 @@ export function prepareLegacySheet(s: WorkbookSnapshot): WorkbookSnapshot {
       while (usedVendorColumns.has(vendorColumn(nextColumnIndex))) nextColumnIndex++;
       column = vendorColumn(nextColumnIndex); usedVendorColumns.add(column);
     }
-    const revision = s.analysis.offerRevisions.filter(r => r.offerId === offer.id).reduce<(typeof s.analysis.offerRevisions)[number] | undefined>(
-      (latest, r) => !latest || r.revisionNumber > latest.revisionNumber ? r : latest, undefined);
     const cells = new Map<string, CellSnapshot>();
     const pattern = (["C", "D", "E"] as const)[Math.min(index, 2)]!;
     for (const [label, row] of [["Nama vendor", 9], ["Notes", 18]] as const) {
@@ -105,11 +101,11 @@ export function prepareLegacySheet(s: WorkbookSnapshot): WorkbookSnapshot {
       const row = position < vendorComponentLabels.length ? position + 10 : extraRowNumbers.get(label)!;
       const existing = legacyVendorCell(s, offer.id, label);
       if (existing) { cells.set(String(row), existing); return; }
-      const value = revision?.values.find(v => v.label.toLocaleLowerCase("id-ID") === label.toLocaleLowerCase("id-ID"))?.input;
+      const value = offer.values.find(v => v.label.toLocaleLowerCase("id-ID") === label.toLocaleLowerCase("id-ID"))?.input;
       const cell = add("EVALUASI_VENDOR", "SHARED", `@EV!${column}${row}|vendor:${offer.id}:${label}`, value ?? { kind: "UNSET" });
       cells.set(String(row), cell);
       const source = row <= 17 ? SOURCE_SHEETS[0]!.cells[pattern + row] : undefined;
-      const custom = revision?.values.find(v => v.label === `formula:${label}`)?.input;
+      const custom = offer.values.find(v => v.label === `formula:${label}`)?.input;
       if (custom?.kind === "TEXT") {
         pending.push({ cell, expression: custom.text.replace(/EV!([A-Z]+\d+)/gi, "$1"), resolve: address => {
           const found = cells.get(address.replace(/^[A-Z]+/, ""));
@@ -188,7 +184,7 @@ export function prepareLegacySheet(s: WorkbookSnapshot): WorkbookSnapshot {
         return `@{${destination.id}}`;
       });
       const formulaId = id<"formula">();
-      formulas.push({ ...definition, id: formulaId, versionId: id<"formula-version">(), targetCellId: target.id, expression,
+      formulas.push({ ...definition, id: formulaId, targetCellId: target.id, expression,
         referenceCellIds: [...new Set(references(parseFormula(expression), () => []))] as StableId<"cell">[] });
       writers.set(target.id, { kind: "FORMULA", formulaId });
     };
@@ -200,7 +196,7 @@ export function prepareLegacySheet(s: WorkbookSnapshot): WorkbookSnapshot {
   for (const item of pending) {
     const formulaId = id<"formula">();
     const expression = item.expression.includes("@{") ? item.expression : formulaFromAddresses(item.expression, item.resolve, () => false);
-    formulas.push({ id: formulaId, versionId: id<"formula-version">(), targetCellId: item.cell.id, expression,
+    formulas.push({ id: formulaId, targetCellId: item.cell.id, expression,
       referenceCellIds: [...new Set(references(parseFormula(expression), () => []))] as StableId<"cell">[], activation: "ACTIVE", sourceKind: "OPERATIONAL_OVERRIDE", provenance: null });
     writers.set(item.cell.id, { kind: "FORMULA", formulaId });
   }
@@ -228,7 +224,7 @@ export function connectAhsHpp(s: WorkbookSnapshot): WorkbookSnapshot {
     return [s.profiles[profile].hppBase.cellId, sourceId] as const;
   }));
   const added = [...sources].map(([targetCellId, sourceId]) => ({
-    id: id<"formula">(), versionId: id<"formula-version">(), targetCellId, expression: `@{${sourceId}}`,
+    id: id<"formula">(), targetCellId, expression: `@{${sourceId}}`,
     referenceCellIds: [sourceId], activation: "ACTIVE" as const, sourceKind: "OPERATIONAL_OVERRIDE" as const, provenance: null,
   }));
   const formulaIds = new Map(added.map(f => [f.targetCellId, f.id]));
@@ -240,7 +236,7 @@ export function connectAhsHpp(s: WorkbookSnapshot): WorkbookSnapshot {
       cells: t.cells.map(c => formulaIds.has(c.id) ? { ...c, source: { kind: "FORMULA" as const, formulaId: formulaIds.get(c.id)! } } : c),
     })) })),
     profiles: Object.fromEntries(PROFILES.map(profile => [profile, pending.includes(profile) ? {
-      ...s.profiles[profile], hppBase: { ...s.profiles[profile].hppBase, origin: "CONVERSION_COST" as const, contextRunId: null },
+      ...s.profiles[profile], hppBase: { ...s.profiles[profile].hppBase, origin: "CONVERSION_COST" as const },
       formulaIds: [...s.profiles[profile].formulaIds, formulaIds.get(s.profiles[profile].hppBase.cellId)!],
     } : s.profiles[profile]])) as unknown as WorkbookSnapshot["profiles"],
     ...(s.workbook ? { workbook: { ...s.workbook, cells: s.workbook.cells.map(p => formulaIds.has(p.cellId) ? { ...p, kind: "RESULT" as const } : p) } } : {}),
@@ -276,7 +272,7 @@ export function makeAhsSaleInput(s: WorkbookSnapshot): WorkbookSnapshot {
     if (gross.source.kind === "INPUT" && gross.source.input.kind === "TEXT") continue;
     const formulaId = gross.source.kind === "INPUT" ? id<"formula">() : null;
     pending.push({ profile, gross, sale, input, oldFormulaId: oldFormula?.id ?? null,
-      formula: formulaId ? { id: formulaId, versionId: id<"formula-version">(), targetCellId: gross.id,
+      formula: formulaId ? { id: formulaId, targetCellId: gross.id,
         expression: grossExpression, referenceCellIds: [sale.id, pbbkb.id, ppn.id],
         activation: "ACTIVE", sourceKind: "OPERATIONAL_OVERRIDE", provenance: null } : null });
   }

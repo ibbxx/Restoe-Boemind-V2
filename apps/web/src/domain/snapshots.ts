@@ -25,11 +25,3 @@ export function canonicalJson(value: unknown): string {
 export function captureSnapshot(value: unknown): WorkbookSnapshot {
   return freeze(parseSnapshot(value));
 }
-
-export function serializeSnapshot(value: unknown): string {
-  return canonicalJson(parseSnapshot(value));
-}
-
-export function deserializeSnapshot(serialized: string): WorkbookSnapshot {
-  return captureSnapshot(JSON.parse(serialized));
-}

@@ -68,7 +68,7 @@ export function connectAhsVolumes(snapshot: WorkbookSnapshot): WorkbookSnapshot 
       const existing = formulaId ? snapshot.formulas.find(formula => formula.id === formulaId) : undefined;
       const expression = `@{${source.id}}`;
       if (existing?.activation === "ACTIVE" && existing.expression === expression && existing.referenceCellIds.length === 1 && existing.referenceCellIds[0] === source.id) continue;
-      updates.set(target.id, { id: existing?.id ?? id<"formula">(), versionId: id<"formula-version">(), targetCellId: target.id,
+      updates.set(target.id, { id: existing?.id ?? id<"formula">(), targetCellId: target.id,
         expression, referenceCellIds: [source.id], activation: "ACTIVE", sourceKind: "OPERATIONAL_OVERRIDE", provenance: existing?.provenance ?? null });
     }
   }

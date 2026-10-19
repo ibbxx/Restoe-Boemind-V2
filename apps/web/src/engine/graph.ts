@@ -1,4 +1,4 @@
-import type { CellInput, CellSnapshot, WorkbookSnapshot } from "../domain/contracts.ts";
+import type { CellSnapshot, WorkbookSnapshot } from "../domain/contracts.ts";
 import { parseStableId } from "../domain/ids.ts";
 import { canonicalJson, freeze } from "../domain/snapshots.ts";
 import { object, array, requireCondition, text } from "../domain/validation.ts";
@@ -9,7 +9,6 @@ import type { Ast } from "./parser.ts";
 
 export interface GraphNode {
   readonly cell: CellSnapshot;
-  readonly pinnedInput?: CellInput;
   readonly ast: Ast | null;
   readonly dependencies: readonly string[];
   readonly writer: string;
@@ -71,7 +70,6 @@ export function compileGraph(snapshot: WorkbookSnapshot, configuration: EngineCo
   const units = new Map(configuration.units.map(u => [u.cellId, u.dimensions]));
   const nodes = new Map<string, GraphNode>();
   for (const cell of cells) {
-    let pinnedInput: CellInput | undefined;
     let ast: Ast | null = null;
     let dependencies: readonly string[] = [];
     let error: GraphNode["error"] = null;
@@ -89,7 +87,7 @@ export function compileGraph(snapshot: WorkbookSnapshot, configuration: EngineCo
       else if (mapping && (cell.source.kind !== "MAPPING" || cell.source.mappingId !== mapping.id)) {
         error = { status: "INVALID", code: "WRITER_MISMATCH", path: [cell.id] };
       } else if (formula || mapping) {
-        writer = formula ? formula.sourceKind + ":" + formula.versionId : "MAPPING:" + mapping!.versionId;
+        writer = formula ? formula.sourceKind + ":" + formula.id : "MAPPING:" + mapping!.id;
         const expression = formula?.expression ?? mapping!.transformExpression ?? `@{${mapping!.sourceCellId}}`;
         ast = parseFormula(expression);
         const memberships: unknown[] = [];
@@ -112,37 +110,18 @@ export function compileGraph(snapshot: WorkbookSnapshot, configuration: EngineCo
           // Unequal labels do not establish an approved conversion, even if a numeric expression exists.
           error = { status: "INVALID", code: "UNAPPROVED_MAPPING_TRANSFORM", path: [cell.id, mapping.sourceCellId] };
         }
-        if (!error && mapping?.sourceComponent.startsWith("offer-revision:")) {
-          const revision = snapshot.analysis.offerRevisions.find(r => r.id === mapping.provenance.sourceRef);
-          const sourceTable = snapshot.worksheets.filter(w => w.stage === "EVALUASI_VENDOR").flatMap(w => w.tables)
-            .find(table => table.cells.some(c => c.id === mapping.sourceCellId));
-          const sourceCell = sourceTable?.cells.find(c => c.id === mapping.sourceCellId);
-          const column = snapshot.workbook?.offers.find(o => o.offerId === revision?.offerId && o.columnId === sourceCell?.columnId);
-          const marker = `|vendor:${revision?.offerId}:`;
-          const legacyLabel = sourceTable?.rows.find(row => row.id === sourceCell?.rowId)?.label;
-          const label = snapshot.workbook ? mapping.sourceCellId : legacyLabel?.includes(marker) ? legacyLabel.split(marker)[1] : undefined;
-          const value = revision?.values.find(v => v.label === label);
-          if (!(snapshot.workbook ? column : label) || !value || mapping.transformExpression !== null ||
-            mapping.sourceComponent !== `offer-revision:${revision?.id}:${mapping.sourceCellId}`) {
-            error = { status: "MISSING", code: "MISSING_OFFER_REVISION_VALUE", path: [cell.id, mapping.sourceCellId] };
-          } else {
-            // A negotiated column may change; the selected revision remains the mapping's immutable input.
-            pinnedInput = value.input;
-            ast = null; dependencies = [];
-          }
-        }
       }
     } catch (caught) {
       error = { status: caught instanceof ReferenceError ? "MISSING" : "INVALID",
         code: caught instanceof ReferenceError ? "MISSING_AGGREGATE" : "INVALID_FORMULA", path: [cell.id] };
     }
     const selection = configuration.selectionDependentCellIds.includes(cell.id)
-      ? snapshot.analysis.offerRevisions.find(r => r.id === snapshot.selectedOfferRevisionId) ?? null : undefined;
+      ? snapshot.analysis.offers.find(r => r.id === snapshot.selectedOfferId) ?? null : undefined;
     const unit = units.get(cell.id) ?? null;
-    const signature = canonicalJson({ cell: { id: cell.id, scope: cell.scope, source: cell.source }, pinnedInput: pinnedInput ?? null, formulas, mappings,
+    const signature = canonicalJson({ cell: { id: cell.id, scope: cell.scope, source: cell.source }, formulas, mappings,
       unit, unitSymbol: configuration.units.find(u => u.cellId === cell.id)?.symbol ?? null,
-      aggregates: usedAggregates, selection: selection ?? null, selectionId: selection === undefined ? null : snapshot.selectedOfferRevisionId });
-    nodes.set(cell.id, { cell, ...(pinnedInput ? { pinnedInput } : {}), ast, dependencies, writer, unit, signature, error });
+      aggregates: usedAggregates, selection: selection ?? null, selectionId: selection === undefined ? null : snapshot.selectedOfferId });
+    nodes.set(cell.id, { cell, ast, dependencies, writer, unit, signature, error });
   }
   const dependents = new Map<string, string[]>();
   nodes.forEach(n => n.dependencies.forEach(id => dependents.set(id, [...(dependents.get(id) ?? []), n.cell.id])));

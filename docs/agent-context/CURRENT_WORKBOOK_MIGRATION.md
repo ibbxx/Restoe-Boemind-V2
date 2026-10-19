@@ -1,5 +1,7 @@
 # Kondisi terbaru per Analysis
 
+> Baseline penerapan cloud terdahulu. Refactor terbaru berada pada PERSISTENCE_CURRENT_ONLY_AUDIT.md dan migration 20261019071911_current_only_procurement.sql (belum diterapkan ke cloud). Script `migrate:current-workbooks` dan backfill yang disebut pada langkah lama di bawah telah dihapus; jangan menjalankan instruksi cutover lama untuk kode baru. Cloud masih memakai hasil migration lama ini sampai operator menerapkan migration baru.
+
 Keputusan pengguna 2026-10-19: tidak menyimpan histori revisi atau arsip hasil hitung baru. Kode runtime dan database aktif sudah memakai satu kondisi terbaru sejak migrasi `20261019035326_current_workbooks_with_latest_data`. Dokumentasi PRD/README/verifikasi lama yang menyebut histori adalah baseline sebelumnya, bukan kontrak runtime terbaru.
 
 ## Bukti penerapan cloud 2026-10-19

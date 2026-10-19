@@ -1,5 +1,7 @@
 # Source Index
 
+Implementasi persistence terbaru: [PERSISTENCE_CURRENT_ONLY_AUDIT.md](./PERSISTENCE_CURRENT_ONLY_AUDIT.md), `apps/web/src/persistence/workbook-data.ts`, migration `20261019071911_current_only_procurement.sql`, dan `apps/web/tests/current-persistence.test.ts`. Referensi tests/revision/history pada tabel sumber lama di bawah merupakan baseline historis; runtime aktif hanya memakai tiga tabel dan tidak menjalankan backfill lama. Workbook/PRD tetap sumber bisnis; audit persistence bukan perubahan formula/expected value.
+
 Audit implementasi terbaru: [Editor rumus seluruh sel Evaluasi Vendor](./EVALUASI_VENDOR_FORMULA_AUDIT.md). Laporan ini mencatat inspeksi kode, perubahan, dan batas verifikasi; bukan pengesahan angka bisnis atau pengganti sumber asli.
 
 Path berikut diperiksa dalam audit. Versi adalah versi yang tertulis di artefak; bila tidak tertulis, dicatat sebagai tidak dinyatakan.

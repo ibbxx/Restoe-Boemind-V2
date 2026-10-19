@@ -7,7 +7,3 @@ export function parseProfile(value: unknown): Profile {
   }
   return value;
 }
-
-export function isProfitMueOperational(profile: Profile): boolean {
-  return profile === "INU";
-}

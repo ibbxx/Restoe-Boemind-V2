@@ -34,7 +34,7 @@ export function prepareNumericBlanks(s: WorkbookSnapshot): WorkbookSnapshot {
     const members = Array.from({ length: 7 }, (_, index) => addresses.get(column + (index + 10)));
     if (members.some(member => !member || byId.get(member)?.tableId !== target.tableId)) return [];
     const expression = `SUM(${members.map(member => `@{${member}}`).join(",")})`;
-    return formula.expression === expression ? [] : [[formula.id, { ...formula, versionId: id<"formula-version">(), expression,
+    return formula.expression === expression ? [] : [[formula.id, { ...formula, expression,
       referenceCellIds: members as StableId<"cell">[] }] as const];
   }));
   if (!numericBlanks.size && !repaired.size) return s;
@@ -136,7 +136,7 @@ export function createProcurementWorkbook(projectName: string, analysisName: str
         requireCondition(byAddress.has(a), "Source reference outside template: " + a); return byAddress.get(a)!.id;
       }, a => presentation.find(p => p.cellId === byAddress.get(a)?.id)?.kind === "BLANK");
       const formulaId = id<"formula">();
-      formulas.push({ id: formulaId, versionId: id<"formula-version">(), targetCellId: cell.id, expression,
+      formulas.push({ id: formulaId, targetCellId: cell.id, expression,
         referenceCellIds: [...new Set(references(parseFormula(expression), () => []))] as StableId<"cell">[], activation: "ACTIVE",
         sourceKind: Object.hasOwn(replacement, canonical) ? "OPERATIONAL_OVERRIDE" : "WORKBOOK_SOURCE", provenance: { workbookSha256: SOURCE_HASH, sheet: sheet.name, address } });
       const table = worksheets.flatMap(w => w.tables).find(t => t.id === cell.tableId)!;
@@ -147,7 +147,7 @@ export function createProcurementWorkbook(projectName: string, analysisName: str
   }
   const workbook: DynamicWorkbook = { template: "AHAS-v1", sourceHash: SOURCE_HASH, configuration: null, solver: null, cells: presentation, tables: layouts, bindings, offers: [], selections: { INU: null, SOLAR_BAWAH: null } };
   const snapshot = changeWorkbook(base, { schemaVersion: 3, activeProfile: "SOLAR_BAWAH", worksheets, formulas, workbook, profiles: Object.fromEntries(PROFILES.map(profile => [profile, {
-    hppBase: { origin: "CONVERSION_COST", cellId: hppIds[profile], contextRunId: null }, reviewContext: null,
+    hppBase: { origin: "CONVERSION_COST", cellId: hppIds[profile] },
     cellIds: worksheets.flatMap(w => w.tables.flatMap(t => t.cells)).filter(c => c.scope === profile).map(c => c.id),
     formulaIds: formulas.filter(f => worksheets.flatMap(w => w.tables.flatMap(t => t.cells)).find(c => c.id === f.targetCellId)?.scope === profile).map(f => f.id),
   }])) as unknown as WorkbookSnapshot["profiles"] });

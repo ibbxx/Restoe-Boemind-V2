@@ -48,9 +48,16 @@ export function createSessionHandler(env: Readonly<Record<string, string | undef
       if (request.method === "GET") {
         const headers = new Headers();
         const token = sessionCookie(request);
+        const refreshToken = sessionCookie(request, refreshCookie);
+        if (!token && !refreshToken) return response({ actorId: null });
         if (token) headers.set("authorization", "Bearer " + token);
-        const actorId = await auth.authenticate(new Request(request.url, { headers }));
-        return response({ actorId });
+        try {
+          const actorId = await auth.authenticate(new Request(request.url, { headers }));
+          return response({ actorId });
+        } catch (error) {
+          if (error instanceof AuthenticationError && !refreshToken) return clear(response({ actorId: null }));
+          throw error;
+        }
       }
       if (request.method === "DELETE") {
         let token = sessionCookie(request);

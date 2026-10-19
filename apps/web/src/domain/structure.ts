@@ -89,17 +89,6 @@ function scopeOf(value: unknown): Scope {
   return value === "SHARED" ? "SHARED" : parseProfile(value);
 }
 
-export function addTable(snapshot: unknown, worksheetId: unknown, options: { readonly label: string; readonly afterTableId?: string | null }) {
-  const s = parseSnapshot(snapshot);
-  const target = parseStableId<"worksheet">(worksheetId);
-  const worksheet = s.worksheets.find(w => w.id === target);
-  requireCondition(worksheet, "Worksheet tidak ditemukan.");
-  requireCondition(options.label.trim().length > 0, "Label tabel wajib diisi.");
-  const table: TableSnapshot = { id: id<"table">(), rows: [], columns: [], rowOrder: [], columnOrder: [], cells: [], merges: [] };
-  const tables = insertAfterId(worksheet.tables, t => t.id, options.afterTableId ?? null, table);
-  return changeWorkbook(s, { worksheets: s.worksheets.map(w => w.id === target ? { ...w, tables } : w) });
-}
-
 export function addRow(snapshot: unknown, tableId: unknown, options: { readonly label: string; readonly scope: Scope; readonly afterRowId?: string | null }) {
   const s = parseSnapshot(snapshot);
   const target = parseStableId<"table">(tableId);
@@ -166,28 +155,6 @@ export function removeColumn(snapshot: unknown, tableId: unknown, columnId: unkn
   return withIndexes(s, { worksheets: replaceTable(s, target, updated) });
 }
 
-export function setRowLabel(snapshot: unknown, tableId: unknown, rowId: unknown, label: string) {
-  const s = parseSnapshot(snapshot);
-  const target = parseStableId<"table">(tableId), row = parseStableId<"row">(rowId);
-  const table = findTable(s, target);
-  requireCondition(table, "Tabel tidak ditemukan.");
-  requireCondition(label.trim().length > 0, "Label baris wajib diisi.");
-  const updated: TableSnapshot = { ...table, rows: table.rows.map(r => r.id === row ? { ...r, label: label.trim() } : r) };
-  requireCondition(table.rows.some(r => r.id === row), "Baris tidak ditemukan pada tabel ini.");
-  return changeWorkbook(s, { worksheets: replaceTable(s, target, updated) });
-}
-
-export function setColumnLabel(snapshot: unknown, tableId: unknown, columnId: unknown, label: string) {
-  const s = parseSnapshot(snapshot);
-  const target = parseStableId<"table">(tableId), column = parseStableId<"column">(columnId);
-  const table = findTable(s, target);
-  requireCondition(table, "Tabel tidak ditemukan.");
-  requireCondition(label.trim().length > 0, "Label kolom wajib diisi.");
-  const updated: TableSnapshot = { ...table, columns: table.columns.map(c => c.id === column ? { ...c, label: label.trim() } : c) };
-  requireCondition(table.columns.some(c => c.id === column), "Kolom tidak ditemukan pada tabel ini.");
-  return changeWorkbook(s, { worksheets: replaceTable(s, target, updated) });
-}
-
 export function mergeCells(snapshot: unknown, tableId: unknown, anchorCellId: unknown, span: { readonly rowSpan: number; readonly colSpan: number }) {
   const s = parseSnapshot(snapshot);
   const target = parseStableId<"table">(tableId), anchorId = parseStableId<"cell">(anchorCellId);
@@ -231,7 +198,7 @@ export function setCellFormula(snapshot: unknown, cellId: unknown, expression: s
   requireCondition(!s.workbook?.bindings.some(b => b.cellId === target && ["cost", "supplier", "supplierName"].includes(b.key)), "Sel ini dikelola pilihan vendor atau solver.");
   requireCondition(!PROFILES.some(profile => s.profiles[profile].hppBase.cellId === target), "HPP mengikuti Biaya Konversi.");
   requireCondition(!s.mappings.some(m => m.targetCellId === target), "Target mapping tidak boleh ditimpa formula.");
-  requireCondition(!s.mappings.some(m => m.sourceCellId === target && !(vendorCell && (m.sourceComponent.startsWith("offer-revision:") || m.sourceComponent.startsWith("vendor-live:") || m.sourceComponent.startsWith("project-location-live:")))), "Sel sumber mapping tidak boleh diubah menjadi formula.");
+  requireCondition(!s.mappings.some(m => m.sourceCellId === target && !(vendorCell && (m.sourceComponent.startsWith("vendor-live:") || m.sourceComponent.startsWith("project-location-live:")))), "Sel sumber mapping tidak boleh diubah menjadi formula.");
   const referenceCellIds = [...new Set(references(parseFormula(expression), () => {
     throw new TypeError("Gunakan referensi sel langsung.");
   }))] as StableId<"cell">[];
@@ -243,7 +210,7 @@ export function setCellFormula(snapshot: unknown, cellId: unknown, expression: s
   const currentFormulaId = cell.source.kind === "FORMULA" ? cell.source.formulaId : null;
   const existing = currentFormulaId ? s.formulas.find(f => f.id === currentFormulaId) : undefined;
   const formulaId = existing?.id ?? id<"formula">();
-  const formula: FormulaDefinition = { id: formulaId, versionId: id<"formula-version">(), targetCellId: target,
+  const formula: FormulaDefinition = { id: formulaId, targetCellId: target,
     expression, referenceCellIds, sourceKind: "OPERATIONAL_OVERRIDE", activation: "ACTIVE", provenance: existing?.provenance ?? null };
   const formulas = existing ? s.formulas.map(f => f.id === formulaId ? formula : f) : [...s.formulas, formula];
   const dependencies = new Map(formulas.filter(f => f.activation === "ACTIVE").map(f => [f.targetCellId, f.referenceCellIds]));
@@ -272,7 +239,7 @@ export function clearCellSource(snapshot: unknown, cellId: unknown) {
   requireCondition(vendorCell || !s.workbook?.cells.some(p => p.cellId === target && p.kind === "LABEL"), "Sel label tidak boleh dikosongkan.");
   requireCondition(!s.workbook?.bindings.some(b => b.cellId === target && ["cost", "supplier", "supplierName"].includes(b.key)), "Sel ini dikelola pilihan vendor atau solver.");
   requireCondition(!PROFILES.some(profile => s.profiles[profile].hppBase.cellId === target), "HPP mengikuti Biaya Konversi.");
-  requireCondition(!s.mappings.some(m => m.targetCellId === target || (m.sourceCellId === target && !(vendorCell && (m.sourceComponent.startsWith("offer-revision:") || m.sourceComponent.startsWith("vendor-live:") || m.sourceComponent.startsWith("project-location-live:"))))),
+  requireCondition(!s.mappings.some(m => m.targetCellId === target || (m.sourceCellId === target && !(vendorCell && (m.sourceComponent.startsWith("vendor-live:") || m.sourceComponent.startsWith("project-location-live:"))))),
     "Sel masih milik mapping; lepaskan mapping-nya lebih dulu.");
   const clearedFormulaId = cell.source.kind === "FORMULA" ? cell.source.formulaId : null;
   const formulas = clearedFormulaId ? s.formulas.filter(f => f.id !== clearedFormulaId) : s.formulas;

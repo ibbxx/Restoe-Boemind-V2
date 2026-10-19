@@ -38,7 +38,7 @@ export function LoadingIndicator({ active, label }: { active: boolean; label: st
   return <div className="app-loading" hidden={!active} aria-hidden="true">
     <div className="loading-logo">
       <canvas ref={canvasRef} width={256} height={256} hidden={!ready} />
-      <Image src="/loading-logo/logo.png" alt="" width={172} height={177} hidden={ready} />
+      <Image src="/loading-logo/logo.png" alt="" width={172} height={177} loading="eager" hidden={ready} />
     </div>
     <span>{label}</span>
   </div>;

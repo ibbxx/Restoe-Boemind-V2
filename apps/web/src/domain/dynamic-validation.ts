@@ -24,7 +24,7 @@ export function parseDynamicWorkbook(value: unknown): DynamicWorkbook {
   return {
     template: "AHAS-v1", sourceHash: text(w.sourceHash), configuration,
     solver: solver ? { minimum: text(solver.minimum), maximum: text(solver.maximum), step: text(solver.step) } : null,
-    selections: { INU: selections.INU === null ? null : parseStableId<"offer-revision">(selections.INU), SOLAR_BAWAH: selections.SOLAR_BAWAH === null ? null : parseStableId<"offer-revision">(selections.SOLAR_BAWAH) },
+    selections: { INU: selections.INU === null ? null : parseStableId<"offer">(selections.INU), SOLAR_BAWAH: selections.SOLAR_BAWAH === null ? null : parseStableId<"offer">(selections.SOLAR_BAWAH) },
     tables: array(w.tables).map(raw => {
       const t = object(raw, ["tableId", "profile", "rowHeights", "columnWidths"]);
       function sizes(raw: unknown, maximum: number) { return array(raw).map(raw => {
@@ -47,9 +47,9 @@ export function parseDynamicWorkbook(value: unknown): DynamicWorkbook {
       return { profile: parseProfile(b.profile), key: text(b.key, true), cellId: parseStableId<"cell">(b.cellId) };
     }),
     offers: array(w.offers).map(raw => {
-      const o = object(raw, ["columnId", "baseCellId", "nameCellId", "offerId", "revisionId", "pattern"]);
+      const o = object(raw, ["columnId", "baseCellId", "nameCellId", "offerId", "pattern"]);
       requireCondition(["C", "D", "E"].includes(text(o.pattern)), "Unknown vendor pattern.");
-      return { baseCellId: parseStableId<"cell">(o.baseCellId), nameCellId: parseStableId<"cell">(o.nameCellId), columnId: parseStableId<"column">(o.columnId), offerId: parseStableId<"offer">(o.offerId), revisionId: parseStableId<"offer-revision">(o.revisionId), pattern: o.pattern as "C" | "D" | "E" };
+      return { baseCellId: parseStableId<"cell">(o.baseCellId), nameCellId: parseStableId<"cell">(o.nameCellId), columnId: parseStableId<"column">(o.columnId), offerId: parseStableId<"offer">(o.offerId), pattern: o.pattern as "C" | "D" | "E" };
     }),
   };
 }
@@ -71,9 +71,9 @@ export function validateDynamicReferences(s: WorkbookSnapshot) {
   }
   requireCondition(w.cells.every(c => cells.has(c.cellId)) && w.bindings.every(b => cells.get(b.cellId)?.scope === b.profile), "Unknown cell presentation/binding.");
   for (const o of w.offers) requireCondition(tables.some(t => t.columnOrder.includes(o.columnId) && t.cells.every(c => c.scope === "SHARED") && t.cells.some(c => c.id === o.baseCellId && c.columnId === o.columnId) && t.cells.some(c => c.id === o.nameCellId && c.columnId === o.columnId)) &&
-    s.analysis.offerRevisions.some(r => r.id === o.revisionId && r.offerId === o.offerId), "Invalid offer column binding.");
-  for (const profile of ["INU", "SOLAR_BAWAH"] as const) requireCondition(w.selections[profile] === null || w.offers.some(o => s.analysis.offerRevisions.some(r => r.id === w.selections[profile] && r.offerId === o.offerId)), "Invalid profile selection.");
-  requireCondition(s.selectedOfferRevisionId === w.selections[s.activeProfile], "Active selection mismatch.");
+    s.analysis.offers.some(r => r.id === o.offerId), "Invalid offer column binding.");
+  for (const profile of ["INU", "SOLAR_BAWAH"] as const) requireCondition(w.selections[profile] === null || w.offers.some(o => o.offerId === w.selections[profile]), "Invalid profile selection.");
+  requireCondition(s.selectedOfferId === w.selections[s.activeProfile], "Active selection mismatch.");
   if (w.configuration) {
     requireCondition(s.policy.status === "CONFIGURED" && s.policy.versionId === w.configuration.policyVersionId, "Configuration policy mismatch.");
     requireCondition(w.configuration.units.every(u => cells.has(u.cellId)) && w.configuration.aggregates.every(a => a.memberCellIds.every(id => cells.has(id))) && w.configuration.selectionDependentCellIds.every(id => cells.has(id)), "Configuration target missing.");

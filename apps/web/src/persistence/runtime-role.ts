@@ -37,7 +37,7 @@ export async function enterRuntimeRole(tx: postgres.TransactionSql): Promise<voi
     select c.*, n.nspname from pg_class c join pg_namespace n on n.oid = c.relnamespace
     where n.nspname = 'procurement' and c.relkind in ('r','p','v','m','f','S')
   ), updates(table_name, column_name) as (values ('projects','name'),('analyses','name'),
-    ('current_workbooks','snapshot'),('current_workbooks','configuration'),('current_workbooks','version'),
+    ('current_workbooks','data'),('current_workbooks','version'),
     ('current_workbooks','saved_at'),('current_workbooks','saved_by'),('current_workbooks','mutation_id'),('current_workbooks','request_signature'))
   select current_user = 'procurement_runtime' and current_setting('row_security') = 'on'
     and has_schema_privilege(current_user, 'procurement', 'USAGE')
@@ -79,7 +79,8 @@ export async function enterRuntimeRole(tx: postgres.TransactionSql): Promise<voi
         and (a.is_grantable or a.privilege_type not in ('SELECT','INSERT')))
     and not exists (select 1 from objects o join pg_attribute c on c.attrelid = o.oid cross join lateral aclexplode(c.attacl) a
       where (a.grantee = 0 or a.grantee in (select oid from actors)) and a.is_grantable)
-    as safe, to_regclass('procurement.current_workbooks') is not null as storage_ready`;
+    as safe, exists (select 1 from information_schema.columns where table_schema = 'procurement'
+      and table_name = 'current_workbooks' and column_name = 'data') as storage_ready`;
   if (privileges?.storage_ready !== true) throw new WorkbookUpgradeRequiredError();
   if (privileges?.safe !== true) throw new RuntimeDatabaseRoleError();
 }
