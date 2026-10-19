@@ -41,6 +41,12 @@ summary { cursor: pointer; padding: .7rem 0; }
 .app-actions button:hover:enabled { background: #f1f5f9; color: #0f172a; }
 .unsaved-state { margin-right: 5px; color: #9a3412; font-size: 11px; }
 .operation-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.app-loading { position: fixed; inset: 0; z-index: 80; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 16px; box-sizing: border-box; color: #334155; background: transparent; -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); pointer-events: none; }
+.app-loading[hidden], .loading-logo canvas[hidden], .loading-logo img[hidden] { display: none; }
+.loading-logo { display: grid; place-items: center; width: 160px; height: 160px; }
+.loading-logo canvas { display: block; width: 160px; height: 160px; }
+.loading-logo img { width: 110px; height: auto; object-fit: contain; }
+.app-loading > span { font-size: 12px; line-height: 1.5; text-align: center; }
 .sheet-caption { padding: 10px 24px; font-size: 12px; color: var(--sheet-muted); border-top: 1px solid #e2e8f0; }
 .project-create-form { max-width: 520px; margin: 20px 0; padding: 20px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; }
 .project-create-form h3 { margin: 0 0 12px; }
@@ -222,8 +228,31 @@ summary { cursor: pointer; padding: .7rem 0; }
 .vendor-delete-index { color: #94a3b8; font-size: 12px; }
 .vendor-delete-dialog footer { display: flex; justify-content: end; gap: 8px; margin-top: 24px; }
 .vendor-delete-dialog .vendor-delete-confirm { background: #dc2626; border-color: #dc2626; color: #fff; }
+.vendor-delete-dialog .vendor-component-confirm { background: #0f766e; border-color: #0f766e; color: #fff; }
 .vendor-delete-dialog button:disabled { opacity: .45; cursor: not-allowed; }
 .vendor-delete-dialog .vendor-delete-error { color: #b42318; margin-bottom: 0; }
+.vendor-card { overflow: visible; }
+.vendor-table-container { position: relative; min-width: 0; }
+.procurement-sheet .vendor-title > * { overflow: visible; padding: 3px 6px; }
+.vendor-title-layout { display: grid; grid-template-columns: 32px minmax(0, 1fr) 32px; align-items: center; gap: 8px; min-height: 32px; }
+.vendor-title-content { position: relative; grid-column: 2; min-width: 0; text-align: center; }
+.vendor-title-layout > .vendor-table-actions { grid-column: 3; }
+.procurement-sheet .vendor-title-content .sheet-input { text-align: center; }
+.vendor-table-actions { position: relative; flex: 0 0 32px; align-self: center; z-index: 10; font: 13px Arial, sans-serif; letter-spacing: normal; }
+.vendor-table-actions > summary { display: grid; place-items: center; box-sizing: border-box; width: 32px; height: 32px; margin: 0; padding: 0; border: 1px solid #ffffff26; border-radius: 6px; background: #ffffff0d; color: #f8fafc; cursor: pointer; line-height: 1; list-style: none; }
+.vendor-table-actions > summary svg { display: block; width: 20px; height: 20px; pointer-events: none; }
+.vendor-table-actions > summary::-webkit-details-marker { display: none; }
+.vendor-table-actions > summary:hover, .vendor-table-actions[open] > summary { background: #ffffff30; }
+.vendor-table-actions > summary:focus-visible { outline: 2px solid #93c5fd; outline-offset: -3px; }
+.vendor-table-actions > [role="menu"] { position: absolute; right: 0; top: calc(100% + 6px); box-sizing: border-box; width: 208px; max-width: calc(100vw - 32px); padding: 6px; border: 1px solid #e2e8f0; border-radius: 10px; background: #fff; color: #334155; box-shadow: 0 4px 8px #0f172a0a, 0 12px 32px #0f172a26; text-align: left; }
+.vendor-table-actions [role="menuitem"] { display: block; width: 100%; min-height: 40px; margin: 0; padding: 10px 12px; border: 0; border-radius: 6px; background: #fff; color: #334155; text-align: left; font: 500 13px/20px Arial, sans-serif; }
+.vendor-table-actions [role="menuitem"]:nth-child(3) { margin-top: 6px; position: relative; }
+.vendor-table-actions [role="menuitem"]:nth-child(3)::before { content: ""; position: absolute; top: -4px; left: 6px; right: 6px; height: 1px; background: #e2e8f0; }
+.vendor-table-actions [role="menuitem"]:hover:enabled, .vendor-table-actions [role="menuitem"]:focus-visible { background: #f1f5f9; }
+.vendor-table-actions [role="menuitem"]:focus-visible { outline: 2px solid #2563eb; outline-offset: -2px; }
+.vendor-table-actions .menu-danger { color: #b42318; }
+.vendor-table-actions .menu-danger:hover:enabled, .vendor-table-actions .menu-danger:focus-visible { background: #fff1f2; }
+.vendor-table-actions button:disabled { opacity: .45; cursor: not-allowed; }
 .sheet-canvas-toolbar .toolbar-group { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; border-right: 1px solid #e2e8f0; padding-right: 10px; }
 .sheet-canvas-toolbar .toolbar-group:last-child { border-right: 0; padding-right: 0; }
 .sheet-canvas-toolbar .merge-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; border: 0; }
@@ -300,12 +329,13 @@ summary { cursor: pointer; padding: .7rem 0; }
 .workbook-print-report .currency-cell > span:first-child:not(.cell-print-value):not(.sheet-result):not(.cell-label) { left: 1mm; font-size: inherit; }
 @page { size: A4 landscape; margin: 6mm; }
 @media print {
+  .vendor-table-actions { display: none !important; }
   body:has(> .workbook-print-host) > :not(.workbook-print-host) { display: none !important; }
   body > .workbook-print-host { position: static; visibility: visible; margin: 0; padding: 0; }
   .workbook-print-page { break-inside: avoid; page-break-inside: avoid; }
   :root, body, .workbook-app { color: #0f172a; background: #fff; }
   .workbook-app { min-height: 0; }
-  .app-header, .operation-status, .workbook-app > [role=alert], .sheet-caption, .sheet-canvas-toolbar, .sheet-overview button, .sheet-section-title button, .conversion-control-bar { display: none !important; }
+  .app-header, .operation-status, .app-loading, .workbook-app > [role=alert], .sheet-caption, .sheet-canvas-toolbar, .sheet-overview button, .sheet-section-title button, .conversion-control-bar { display: none !important; }
   .sheet-assumptions, .hpp-context { display: none !important; }
   .sheet-viewport, .sheet-table-scroll, .sheet-card { overflow: visible; max-height: none; }
   .procurement-sheet { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 3mm; width: 100%; max-width: none; padding: 0; margin: 0; font-size: 7px; line-height: 1.1; print-color-adjust: exact; -webkit-print-color-adjust: exact; }

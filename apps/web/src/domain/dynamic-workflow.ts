@@ -1,14 +1,15 @@
 import type { CellInput, CellPresentation, CellSnapshot, WorkbookSnapshot } from "./contracts.ts";
 import type { StableId } from "./ids.ts";
 import { createStableId as id } from "./ids.ts";
-import { appendField, changeWorkbook, nextOfferRevisionNumber } from "./workflow.ts";
+import { appendField, changeWorkbook } from "./workflow.ts";
 import { requireCondition } from "./validation.ts";
 import { units, formulaFromAddresses } from "./procurement-template.ts";
 import { SOURCE_HASH, SOURCE_SHEETS } from "./source-template.ts";
 import { parseFormula, references } from "../engine/parser.ts";
 import { PROFILES } from "./profiles.ts";
 import { addColumn, addRow } from "./structure.ts";
-import { vendorComponents, vendorComponentRoles } from "./vendor-components.ts";
+import { vendorComponents, vendorComponentRoles, includeNewVendorComponentTotals } from "./vendor-components.ts";
+import { validateAhsVolumeInput } from "./ahs-volume.ts";
 
 export function reconcilePresentation(s: WorkbookSnapshot): WorkbookSnapshot {
   if (!s.workbook) return s;
@@ -118,6 +119,9 @@ export function addSheetVendor(snapshot: WorkbookSnapshot, name: string, pattern
           ? cell.source.input : canonicalRow === 10 || (source?.number && Number(source.number) !== 0) ? { kind: "UNSET" } : { kind: "NUMERIC_TEXT", text: "0" } };
       }
     } else if (canonicalRow === 18) { kind = "INPUT"; cellSource = { kind: "INPUT", input: { kind: "UNSET" } }; }
+    else if (table.rows.some(row => row.id === cell.rowId && row.label.startsWith("component:"))) {
+      kind = "INPUT"; unit = "IDR/L"; cellSource = { kind: "INPUT", input: { kind: "UNSET" } };
+    }
     if (cell.source.kind === "FORMULA" || (canonicalRow !== 9 && cell.source.kind === "INPUT" && cell.source.input.kind !== "UNSET" && cell.source.input.text !== "")) {
       cellSource = cell.source;
       kind = cell.source.kind === "FORMULA" ? "RESULT" : "INPUT";
@@ -131,11 +135,11 @@ export function addSheetVendor(snapshot: WorkbookSnapshot, name: string, pattern
   const worksheets = s.worksheets.map(w => ({ ...w, tables: w.tables.map(t => t.id === tableId ? { ...t, cells } : t) }));
   const presentations = s.workbook!.cells.map(p => newPresentations.get(p.cellId) ?? p);
   const configuration = s.workbook!.configuration;
-  return changeWorkbook(s, { worksheets, formulas, analysis: { ...s.analysis,
+  return includeNewVendorComponentTotals(changeWorkbook(s, { worksheets, formulas, analysis: { ...s.analysis,
     vendors: [...s.analysis.vendors, { id: vendorId, analysisId: s.analysisId, name: name.trim() }],
     offers: [...s.analysis.offers, { id: offerId, analysisId: s.analysisId, vendorId, label: name.trim() }],
     offerRevisions: [...s.analysis.offerRevisions, { id: revisionId, offerId, revisionNumber: 1, values }] },
-    workbook: { ...s.workbook!, cells: presentations, offers: [...s.workbook!.offers, { columnId, baseCellId: resolve(actualColumn + "10"), nameCellId: resolve(actualColumn + "9"), offerId, revisionId, pattern }], configuration: configuration ? { ...configuration, version: id<"policy">(), units: presentations.map(p => ({ cellId: p.cellId, symbol: p.unit === "text" ? "1" : p.unit, dimensions: units[p.unit] })) } : null } });
+    workbook: { ...s.workbook!, cells: presentations, offers: [...s.workbook!.offers, { columnId, baseCellId: resolve(actualColumn + "10"), nameCellId: resolve(actualColumn + "9"), offerId, revisionId, pattern }], configuration: configuration ? { ...configuration, version: id<"policy">(), units: presentations.map(p => ({ cellId: p.cellId, symbol: p.unit === "text" ? "1" : p.unit, dimensions: units[p.unit] })) } : null } }), offerId);
 }
 
 export function removeSheetVendor(snapshot: WorkbookSnapshot, offerId: StableId<"offer">) {
@@ -222,8 +226,9 @@ export function prepareVendorColumns(s: WorkbookSnapshot): WorkbookSnapshot {
   return next;
 }
 
-export function editSheetInput(s: WorkbookSnapshot, cell: CellSnapshot, input: CellInput, historical: readonly WorkbookSnapshot[] = []) {
+export function editSheetInput(s: WorkbookSnapshot, cell: CellSnapshot, input: CellInput) {
   requireCondition(s.workbook && cell.source.kind === "INPUT", "Sel bukan input.");
+  validateAhsVolumeInput(s, cell, input);
   const meta = s.workbook.cells.find(p => p.cellId === cell.id);
   requireCondition(!meta || meta.kind !== "RESULT", "Sel ini dihitung atau dikelola sistem.");
   const offer = s.workbook.offers.find(o => o.columnId === cell.columnId);
@@ -231,11 +236,10 @@ export function editSheetInput(s: WorkbookSnapshot, cell: CellSnapshot, input: C
   let analysis = s.analysis, workbook = s.workbook;
   if (offer) {
     const current = analysis.offerRevisions.find(r => r.id === offer.revisionId)!;
-    const revisionId = id<"offer-revision">();
-    const values = current.values.filter(v => v.label !== cell.id).map(v => ({ ...v, id: id<"offer-value">() }));
-    values.push({ id: id<"offer-value">(), label: cell.id, input });
-    analysis = { ...analysis, vendors: cell.id === offer.nameCellId && input.kind === "TEXT" ? analysis.vendors.map(v => v.id === analysis.offers.find(o => o.id === offer.offerId)?.vendorId ? { ...v, name: input.text.trim() || "Vendor" } : v) : analysis.vendors, offerRevisions: [...analysis.offerRevisions, { id: revisionId, offerId: offer.offerId,
-      revisionNumber: nextOfferRevisionNumber(offer.offerId, [s, ...historical]), values }] };
+    const revisionId = current.id;
+    const values = current.values.filter(v => v.label !== cell.id);
+    values.push({ id: current.values.find(v => v.label === cell.id)?.id ?? id<"offer-value">(), label: cell.id, input });
+    analysis = { ...analysis, vendors: cell.id === offer.nameCellId && input.kind === "TEXT" ? analysis.vendors.map(v => v.id === analysis.offers.find(o => o.id === offer.offerId)?.vendorId ? { ...v, name: input.text.trim() || "Vendor" } : v) : analysis.vendors, offerRevisions: analysis.offerRevisions.map(revision => revision.id === current.id ? { ...revision, values } : revision) };
     workbook = { ...workbook, offers: workbook.offers.map(o => o === offer ? { ...o, revisionId } : o) };
   }
   workbook = { ...workbook, cells: workbook.cells.map(p => p.cellId === cell.id && p.kind === "BLANK" ? { ...p, kind: "INPUT" } : p) };
@@ -294,6 +298,7 @@ export function selectSheetOffer(s: WorkbookSnapshot, revisionId: StableId<"offe
     writers.set(targetCellId, { kind: "MAPPING", mappingId });
   }
   let extraAnchorRowId: StableId<"row"> | undefined;
+  const extraRowOrder: StableId<"row">[] = [];
   for (const component of vendorComponents(s, revision.offerId).filter(component => !vendorComponentRoles.some(role => role === component.role))) {
     if (s.workbook?.cells.some(p => p.cellId === component.source.id && p.unit === "text")) {
       s = changeWorkbook(s, { workbook: { ...s.workbook, cells: s.workbook.cells.map(p => p.cellId === component.source.id ? { ...p, unit: "IDR/L" as const } : p),
@@ -316,6 +321,7 @@ export function selectSheetOffer(s: WorkbookSnapshot, revisionId: StableId<"offe
       s = added.snapshot; targetCellId = added.cellId;
     }
     extraAnchorRowId = s.worksheets.flatMap(w => w.tables.flatMap(t => t.cells)).find(c => c.id === targetCellId)?.rowId;
+    if (extraAnchorRowId) extraRowOrder.push(extraAnchorRowId);
     const prior = mappings.find(m => m.targetCellId === targetCellId), mappingId = prior?.id ?? id<"mapping">();
     if (prior) mappings.splice(mappings.indexOf(prior), 1);
     mappings.push(prior?.sourceComponent === `vendor-live:${revision.offerId}:${component.source.id}` && prior.provenance.sourceRef === revision.id ? prior : { id: mappingId, versionId: id<"mapping-version">(), analysisId: s.analysisId, scope: profile,
@@ -328,8 +334,13 @@ export function selectSheetOffer(s: WorkbookSnapshot, revisionId: StableId<"offe
   const retainedFormulaIds = new Set(formulas.map(formula => formula.id));
   return changeWorkbook(s, { selectedOfferRevisionId: profile === s.activeProfile ? revisionId : s.selectedOfferRevisionId, mappings: mappings.filter(mapping => !obsolete.has(mapping.id)), formulas,
     profiles: { ...s.profiles, [profile]: { ...s.profiles[profile], formulaIds: s.profiles[profile].formulaIds.filter(id => retainedFormulaIds.has(id)) } },
-    worksheets: s.worksheets.map(w => ({ ...w, tables: w.tables.map(t => ({ ...t, cells: t.cells.map(c => writers.has(c.id) ? { ...c, source: writers.get(c.id)! }
-      : c.source.kind === "MAPPING" && obsolete.has(c.source.mappingId) ? { ...c, source: { kind: "INPUT" as const, input: { kind: "UNSET" as const } } } : c) })) })),
+    worksheets: s.worksheets.map(w => ({ ...w, tables: w.tables.map(t => {
+      const total = t.cells.find(c => c.scope === profile && s.workbook?.cells.some(p => p.cellId === c.id && p.address === `C${36 - offset}`));
+      const order = total && extraRowOrder.length ? t.rowOrder.filter(rowId => !extraRowOrder.includes(rowId)) : t.rowOrder;
+      const rowOrder = total && extraRowOrder.length ? order.flatMap(rowId => rowId === total.rowId ? [...extraRowOrder, rowId] : [rowId]) : order;
+      return { ...t, rowOrder, cells: t.cells.map(c => writers.has(c.id) ? { ...c, source: writers.get(c.id)! }
+        : c.source.kind === "MAPPING" && obsolete.has(c.source.mappingId) ? { ...c, source: { kind: "INPUT" as const, input: { kind: "UNSET" as const } } } : c) };
+    }) })),
     ...(s.workbook ? { workbook: { ...s.workbook, selections: { ...s.workbook.selections, [profile]: revisionId } } } : {}) });
 }
 

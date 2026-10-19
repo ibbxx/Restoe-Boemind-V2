@@ -11,7 +11,9 @@ Bedakan fakta kode/artefak, keputusan pengguna/PRD yang terkonfirmasi, dan keput
 
 ## Invariant wajib
 
-Pertahankan pemilihan offer/revisi manual, Analysis dan Project yang tidak dicampur tanpa keputusan, profil INU dan Solar Bawah independen, HPP Harga Dasar AHS mengikuti Biaya Harga Dasar Konversi profilnya, Harga Jual AHS manual, stable ID, snapshot historis immutable, restore sebagai revisi baru, penolakan stale revision tanpa overwrite/merge, serta tidak ada auto-award atau compliance gate.
+Pertahankan pemilihan vendor/offer manual, Analysis dan Project yang tidak dicampur tanpa keputusan, profil INU dan Solar Bawah independen, HPP Harga Dasar AHS mengikuti Biaya Harga Dasar Konversi profilnya, Harga Jual AHS manual, stable ID, penolakan simpan dari versi tertinggal tanpa overwrite/merge, serta tidak ada auto-award atau compliance gate.
+
+Keputusan pengguna 2026-10-19 menggantikan kewajiban histori pada instruksi sebelumnya: setiap Analysis hanya mempunyai satu kondisi tersimpan terbaru beserta konfigurasi perhitungan. Jangan membuat arsip revisi, change event before/after, atau arsip hasil hitung baru. Hasil engine bersifat sementara. Token versi dan mutation ID terakhir adalah pengaman konflik/retry, bukan histori. Arsip lama tidak diakses runtime baru dan tidak boleh dihapus fisik tanpa instruksi terpisah. Migrasi skema dan backfill disiapkan terpisah; jangan menjalankannya otomatis saat startup.
 
 ## Batas fase
 

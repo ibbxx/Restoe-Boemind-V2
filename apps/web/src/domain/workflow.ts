@@ -4,26 +4,12 @@ import type { StableId } from "./ids.ts";
 import type { Profile } from "./profiles.ts";
 import { PROFILES } from "./profiles.ts";
 import { captureSnapshot } from "./snapshots.ts";
-import { invalidateReviewContexts } from "./freshness.ts";
 import { requireCondition } from "./validation.ts";
 import { parseFormula, references } from "../engine/parser.ts";
-import type { EngineConfiguration, EngineRun } from "../engine/contracts.ts";
-import { FormulaEngine } from "../engine/formula-engine.ts";
-import { compileGraph, relevantNodes } from "../engine/graph.ts";
-import { recordReviewContext } from "./commands.ts";
 import { reconcilePresentation } from "./dynamic-workflow.ts";
 
 export function changeWorkbook(before: WorkbookSnapshot, changes: Partial<WorkbookSnapshot>) {
-  return captureSnapshot(invalidateReviewContexts(before, reconcilePresentation({ ...before, ...changes, id: id<"snapshot">() })));
-}
-
-export function nextOfferRevisionNumber(offerId: StableId<"offer">, snapshots: readonly WorkbookSnapshot[]) {
-  let maximum = 0;
-  for (const snapshot of snapshots) for (const revision of snapshot.analysis.offerRevisions) {
-    if (revision.offerId === offerId) maximum = Math.max(maximum, revision.revisionNumber);
-  }
-  requireCondition(Number.isSafeInteger(maximum + 1), "Nomor revisi sudah mencapai batas yang didukung.");
-  return maximum + 1;
+  return captureSnapshot(reconcilePresentation({ ...before, ...changes, id: id<"snapshot">() }));
 }
 
 export function emptyWorkbook(projectName: string, analysisName: string, projectId = id<"project">()): WorkbookSnapshot {
@@ -74,45 +60,4 @@ export function reviseFormula(snapshot: WorkbookSnapshot, formulaId: StableId<"f
   const referenceCellIds = [...new Set(references(parseFormula(expression), () => { throw new TypeError("Gunakan referensi cell langsung."); }))] as StableId<"cell">[];
   return changeWorkbook(snapshot, { formulas: snapshot.formulas.map(f => f.id === formulaId ? { ...f, expression,
     referenceCellIds, versionId: id<"formula-version">(), sourceKind: "OPERATIONAL_OVERRIDE", activation: "ACTIVE" } : f) });
-}
-
-export function reviewHppContext(snapshot: WorkbookSnapshot, run: EngineRun, configuration: EngineConfiguration) {
-  const engine = new FormulaEngine(configuration), profile = snapshot.activeProfile;
-  requireCondition(run.status !== "ERROR" && run.manifest.revisionId !== null && run.manifest.snapshot.activeProfile === profile &&
-    run.manifest.snapshot.selectedOfferRevisionId === snapshot.selectedOfferRevisionId && engine.assessFreshness(run, snapshot).freshness === "CURRENT",
-  "Simpan dan hitung preview tanpa error sebelum mencatat konteks HPP.");
-  const graph = compileGraph(snapshot, configuration), relevant = relevantNodes(snapshot, graph);
-  const withReference = changeWorkbook(snapshot, { calculationRunRefs: [...snapshot.calculationRunRefs.filter(r => r.id !== run.id), {
-    id: run.id, snapshotId: run.snapshotId, profile, selectedOfferRevisionId: run.manifest.snapshot.selectedOfferRevisionId,
-    engineVersion: run.engineVersion, policyVersionId: run.policyVersionId, status: run.status,
-  }], profiles: { ...snapshot.profiles, [profile]: { ...snapshot.profiles[profile], hppBase: {
-    ...snapshot.profiles[profile].hppBase, contextRunId: run.id } } } });
-  return recordReviewContext(withReference, profile, { snapshotId: withReference.id, profile,
-    selectedOfferRevisionId: snapshot.selectedOfferRevisionId, runId: run.id, freshness: "CURRENT", decisionStatus: "DRAFT",
-    inputCellIds: [...graph.nodes.values()].filter(n => relevant.has(n.cell.id) && n.cell.source.kind === "INPUT").map(n => n.cell.id),
-    mappingVersionIds: snapshot.mappings.filter(m => relevant.has(m.targetCellId)).map(m => m.versionId),
-  });
-}
-
-// Explicit pinning only; appending a newer offer never changes the selected revision.
-export function pinOfferComponent(snapshot: WorkbookSnapshot, valueId: StableId<"offer-value">, targetId: StableId<"cell">,
-  unit: string, actorId: StableId<"user">, reason: string) {
-  const revision = snapshot.analysis.offerRevisions.find(r => r.id === snapshot.selectedOfferRevisionId);
-  const value = revision?.values.find(v => v.id === valueId);
-  const target = snapshot.worksheets.flatMap(w => w.tables).flatMap(t => t.cells).find(c => c.id === targetId);
-  requireCondition(value && revision && target && target.scope !== "SHARED", "Pilih komponen revisi dan target profil yang valid.");
-  requireCondition(unit.trim().length > 0 && reason.trim().length > 0, "Satuan dan alasan mapping wajib diisi.");
-  requireCondition(!Object.values(snapshot.profiles).some(p => p.hppBase.cellId === targetId), "HPP mengikuti Biaya Konversi.");
-  requireCondition(target.source.kind !== "FORMULA", "Target formula tidak boleh ditimpa mapping.");
-  const source = appendField(snapshot, "EVALUASI_VENDOR", "SHARED", `O · ${revision.id} · ${value.label}`, value.input);
-  const prior = snapshot.mappings.find(m => m.targetCellId === targetId);
-  const mapping = { id: prior?.id ?? id<"mapping">(), versionId: id<"mapping-version">(), analysisId: snapshot.analysisId,
-    scope: target.scope, sourceCellId: source.cellId, targetCellId: targetId, sourceComponent: `offer-value:${value.id}`,
-    transformExpression: null, sourceUnit: unit, targetUnit: unit, status: "ACTIVE" as const,
-    provenance: { actorId, changeEventId: id<"change-event">(), sourceRef: revision.id, reason: reason.trim() } };
-  return { sourceCellId: source.cellId, snapshot: changeWorkbook(source.snapshot, {
-    mappings: [...source.snapshot.mappings.filter(m => m.id !== mapping.id), mapping],
-    worksheets: source.snapshot.worksheets.map(w => ({ ...w, tables: w.tables.map(t => ({ ...t,
-      cells: t.cells.map(c => c.id === targetId ? { ...c, source: { kind: "MAPPING" as const, mappingId: mapping.id } } : c) })) })),
-  }) };
 }

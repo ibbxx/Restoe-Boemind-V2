@@ -182,17 +182,6 @@ export interface CalculationRunReference {
   readonly status: CalculationStatus;
 }
 
-export interface RestoreProvenance {
-  readonly revisionId: StableId<"revision">;
-  readonly snapshotId: StableId<"snapshot">;
-}
-
-export interface SavedRevisionMetadata {
-  readonly parentRevisionId: StableId<"revision"> | null;
-  readonly savedAt: string;
-  readonly restoredFrom: RestoreProvenance | null;
-}
-
 export interface EvaluatedCellValue {
   readonly cellId: StableId<"cell">;
   readonly value:
@@ -221,27 +210,6 @@ export type CalculationRun = {
 export type CalculationStatus = CalculationRun["status"];
 
 export type ValidCalculationRun = Extract<CalculationRun, { readonly status: "VALID" }>;
-
-export type RevisionState = (
-  | { readonly kind: "LOCAL_DRAFT"; readonly baseRevisionId: StableId<"revision"> | null }
-  | {
-      readonly kind: "PREVIEW";
-      readonly baseRevisionId: StableId<"revision"> | null;
-      readonly run: CalculationRun | null;
-    }
-  | {
-      readonly kind: "SAVED_DRAFT";
-      readonly revisionId: StableId<"revision">;
-      readonly run: CalculationRun | null;
-    } & SavedRevisionMetadata
-  | {
-      readonly kind: "CONFIRMED";
-      readonly revisionId: StableId<"revision">;
-      readonly run: ValidCalculationRun;
-    } & SavedRevisionMetadata
-) & { readonly snapshot: WorkbookSnapshot };
-
-export type SavedRevision = Extract<RevisionState, { readonly kind: "SAVED_DRAFT" | "CONFIRMED" }>;
 
 // Structural metadata only; expressions and units do not establish business validity.
 export interface MappingVersion {
@@ -274,24 +242,4 @@ export interface ReviewContext {
   readonly runId: StableId<"run"> | null;
   readonly freshness: "CURRENT" | "STALE";
   readonly decisionStatus: "DRAFT" | "CONFIRMED" | "NEEDS_REVIEW";
-}
-
-// One committed snapshot transition; intermediate draft commands are not recorded here.
-export interface ChangeEvent {
-  readonly id: StableId<"change-event">;
-  readonly actorId: StableId<"user">;
-  readonly occurredAt: string;
-  readonly targetProjectId: StableId<"project">;
-  readonly targetAnalysisId: StableId<"analysis">;
-  readonly changes: readonly {
-    readonly action: "INPUT_CHANGED" | "SELECTION_CHANGED" | "PROFILE_CHANGED" | "MAPPING_CHANGED"
-      | "FORMULA_CHANGED" | "OFFER_CHANGED" | "STRUCTURE_CHANGED" | "CONTEXT_CHANGED";
-    readonly targetIds: readonly string[];
-  }[];
-  readonly action: "SAVE_DRAFT" | "RESTORE";
-  readonly revisionBeforeId: StableId<"revision"> | null;
-  readonly revisionAfterId: StableId<"revision">;
-  readonly before: WorkbookSnapshot | null;
-  readonly after: WorkbookSnapshot;
-  readonly reason: string | null;
 }

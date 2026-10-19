@@ -1,6 +1,6 @@
 import "server-only";
 import postgres from "postgres";
-import { PostgresRevisionRepository } from "../persistence/postgres-revision-repository.ts";
+import { PostgresWorkbookRepository } from "../persistence/postgres-workbook-repository.ts";
 import { createWorkbookHandler } from "./workbook-handler.ts";
 import { SupabaseAuthenticator } from "./supabase-auth.ts";
 import { runtimeConfiguration } from "./runtime-configuration.ts";
@@ -21,5 +21,5 @@ export async function handleWorkbookRequest(request: Request): Promise<Response>
     const config = runtimeConfiguration(process.env);
     return new SupabaseAuthenticator(config.authUrl, config.publicKey).authenticate(req);
   } };
-  return createWorkbookHandler(auth, actorId => new PostgresRevisionRepository(database(runtimeConfiguration(process.env)), actorId))(request);
+  return createWorkbookHandler(auth, actorId => new PostgresWorkbookRepository(database(runtimeConfiguration(process.env)), actorId))(request);
 }

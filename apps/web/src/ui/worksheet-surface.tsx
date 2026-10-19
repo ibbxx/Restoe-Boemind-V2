@@ -1,13 +1,12 @@
 "use client";
 
-import { Fragment, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, FormEvent, MouseEvent, PointerEvent, ReactNode } from "react";
 import type { CellSnapshot, TableSnapshot, WorkbookSnapshot, WorksheetSnapshot } from "../domain/contracts.ts";
 import type { Profile } from "../domain/profiles.ts";
 import type { StableId } from "../domain/ids.ts";
 import { createStableId as id, parseStableId } from "../domain/ids.ts";
-import type { EngineRun } from "../engine/contracts.ts";
-import type { StoredRevision } from "../persistence/contracts.ts";
+import type { EngineConfiguration, EngineRun } from "../engine/contracts.ts";
 import { buildSheetGrid, sheetNumber, sheetNumberFixed, sheetPercent } from "./sheet-grid.ts";
 import { addColumn, addRow, clearCellSource, mergeCells, removeColumn, removeRow, setCellFormula, unmergeCells } from "../domain/structure.ts";
 import { addSheetVendor, changeSheetProfile, editSheetInput, removeSheetVendor, resizeSheet, selectSheetOffer } from "../domain/dynamic-workflow.ts";
@@ -16,20 +15,24 @@ import { binding } from "../domain/procurement-template.ts";
 import { addOffer, addVendor } from "../domain/commands.ts";
 import { appendField } from "../domain/workflow.ts";
 import { cellCodes, describeFormula, displayCellId, displayFormula, resolveFormula } from "../domain/cell-address.ts";
-import { vendorColumn } from "../domain/legacy-sheet.ts";
+import { prepareLegacySheet, vendorColumn } from "../domain/legacy-sheet.ts";
 import { numericInput } from "./numeric-input.ts";
+import { isAhsVolumeCell, isAhsVolumeFollower } from "../domain/ahs-volume.ts";
 import { WorksheetCellInput } from "./worksheet-cell-input.tsx";
 import { printWorkbook } from "./print-workbook.ts";
-import { vendorComponents, vendorComponentRoles } from "../domain/vendor-components.ts";
+import { addVendorComponent, includeNewVendorComponentTotals, removableVendorComponents, removeVendorComponent, vendorComponents, vendorComponentRoles } from "../domain/vendor-components.ts";
 
 type Stage = WorksheetSnapshot["stage"];
 
 interface SurfaceProps {
   snapshot: WorkbookSnapshot | null;
   run: EngineRun | null;
+  configuration: EngineConfiguration | null;
   disabled: boolean;
+  saving?: boolean;
+  onPrintLoading?: (preparing: boolean) => void;
+  volumeError?: string;
   actor?: StableId<"user"> | null;
-  history?: readonly StoredRevision[];
   onChange?: (next: WorkbookSnapshot) => void;
   onError?: (error: string) => void;
   onEditing?: () => void;
@@ -38,7 +41,6 @@ interface SurfaceProps {
   onSelectOffer?: (revisionId: string) => void;
 }
 
-const vendorRows = ["Harga Dasar", "PPN", "PBBKB", "PPH", "OAT", "PPN OAT", "BPH"];
 const costGroups = [
   { label: "HPP", rows: ["Harga Dasar", "OAT", "PBBKB", "PPH INU 0,3%", "BPH Migas 0,25%"] },
   { label: "PAJAK", rows: ["PPN 11%", "PPH penjualan"] },
@@ -54,7 +56,7 @@ const normalized = (text: string) => text.trim().toLocaleLowerCase("id-ID");
 const numericText = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
 
 export function WorksheetSurface(props: SurfaceProps) {
-  const { snapshot, run, disabled, actor, history, onChange, onError, onEditing, onSave, onInput, onSelectOffer } = props;
+  const { snapshot, run, configuration, disabled, saving = false, onPrintLoading, volumeError, actor, onChange, onError, onEditing, onSave, onInput, onSelectOffer } = props;
 
   const [selectedCellId, setSelectedCellId] = useState<string | null>(null);
   const [formulaExpression, setFormulaExpression] = useState("");
@@ -62,20 +64,57 @@ export function WorksheetSurface(props: SurfaceProps) {
   const [legacyTarget, setLegacyTarget] = useState<{ stage: Stage; label: string } | null>(null);
   const [toolbarError, setToolbarError] = useState("");
   const [isPreparingPrint, setIsPreparingPrint] = useState(false);
+  useEffect(() => () => onPrintLoading?.(false), [onPrintLoading]);
   const sheetRef = useRef<HTMLDivElement | null>(null);
   const [vendorToRemove, setVendorToRemove] = useState("");
   const removeVendorDialogRef = useRef<HTMLDialogElement | null>(null);
+  const addComponentDialogRef = useRef<HTMLDialogElement | null>(null);
+  const [newComponentName, setNewComponentName] = useState("");
+  const vendorMenuRef = useRef<HTMLDetailsElement | null>(null);
+  const removeComponentDialogRef = useRef<HTMLDialogElement | null>(null);
+  const [componentToRemove, setComponentToRemove] = useState("");
   const formulaInputRef = useRef<HTMLInputElement | null>(null);
   const formulaCellInputRef = useRef<HTMLInputElement | null>(null);
 
   const isINU = snapshot?.activeProfile === "INU";
+  useEffect(() => {
+    const close = (event: globalThis.PointerEvent) => {
+      if (event.target instanceof Node && vendorMenuRef.current && !vendorMenuRef.current.contains(event.target)) vendorMenuRef.current.open = false;
+    };
+    document.addEventListener("pointerdown", close);
+    return () => document.removeEventListener("pointerdown", close);
+  }, []);
+
+  function focusVendorMenu() { vendorMenuRef.current?.querySelector("summary")?.focus(); }
+
+  function menuAction(action: () => void) {
+    if (vendorMenuRef.current) vendorMenuRef.current.open = false;
+    action();
+    if (!document.querySelector("dialog[open]")) focusVendorMenu();
+  }
+
+  function openRemoveComponentDialog() {
+    setComponentToRemove(""); setToolbarError("");
+    removeComponentDialogRef.current?.showModal();
+  }
+
+  function handleRemoveComponent(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!snapshot || !configuration || !componentToRemove || disabled) return;
+    if (apply(() => removeVendorComponent(snapshot, componentToRemove, configuration))) {
+      removeComponentDialogRef.current?.close();
+      setSelectedCellId(null); setLegacyTarget(null); setFormulaExpression(""); setIsEditingFormula(false);
+    }
+  }
 
   async function handlePrint() {
     if (!snapshot || isPreparingPrint) return;
+    if (volumeError) { setToolbarError(volumeError); return; }
     const revisionId = snapshot.workbook ? snapshot.workbook.selections[snapshot.activeProfile] : snapshot.selectedOfferRevisionId;
     const offerId = snapshot.analysis.offerRevisions.find(revision => revision.id === revisionId)?.offerId;
     if (!offerId) { setToolbarError("Pilih vendor untuk Konversi sebelum mencetak."); return; }
     setIsPreparingPrint(true);
+    onPrintLoading?.(true);
     try {
       if (isEditingFormula) {
         const form = formulaInputRef.current?.form;
@@ -93,7 +132,7 @@ export function WorksheetSurface(props: SurfaceProps) {
       if (index < 1) throw new Error("Kolom vendor terpilih tidak ditemukan.");
       await printWorkbook(sheet, index);
     } catch (cause) { setToolbarError(cause instanceof Error ? cause.message : "Laporan gagal disiapkan."); }
-    finally { setIsPreparingPrint(false); }
+    finally { setIsPreparingPrint(false); onPrintLoading?.(false); }
   }
 
   // Safe mutator
@@ -120,6 +159,7 @@ export function WorksheetSurface(props: SurfaceProps) {
   const codes = useMemo(() => snapshot ? cellCodes(snapshot) : new Map<string, string>(), [snapshot]);
   const selectedTable = allTables.find(t => t.cells.some(c => c.id === selectedCellId));
   const selectedCell = selectedTable?.cells.find(c => c.id === selectedCellId);
+  const selectedVolumeFollower = !!snapshot && !!selectedCell && isAhsVolumeFollower(snapshot, selectedCell);
   const selectedFormula = snapshot?.formulas.find(formula => formula.targetCellId === selectedCellId);
   const formulaMeaning = selectedFormula && snapshot && !isEditingFormula ? describeFormula(selectedFormula.expression, snapshot) : "";
   const selectedMerge = selectedTable?.merges.find(m => m.anchorCellId === selectedCellId);
@@ -152,12 +192,14 @@ export function WorksheetSurface(props: SurfaceProps) {
   }
 
   function handleReferencePointerDown(event: PointerEvent<HTMLElement>, cellId: string) {
+    if (event.target instanceof Element && event.target.closest(".vendor-table-actions")) return;
     if (isEditingFormula && formulaExpression.trimStart().startsWith("=") && event.target !== formulaCellInputRef.current) {
       event.preventDefault(); event.stopPropagation(); insertReference(cellId);
     }
   }
 
   function handleReferenceClick(event: MouseEvent<HTMLElement>) {
+    if (event.target instanceof Element && event.target.closest(".vendor-table-actions")) return;
     if (isEditingFormula && formulaExpression.trimStart().startsWith("=") && event.target !== formulaCellInputRef.current) {
       event.preventDefault(); event.stopPropagation();
     }
@@ -185,6 +227,8 @@ export function WorksheetSurface(props: SurfaceProps) {
   }
 
   function startCellFormula(cellId: string, replace = false) {
+    const target = allTables.flatMap(table => table.cells).find(cell => cell.id === cellId);
+    if (snapshot && target && isAhsVolumeFollower(snapshot, target)) { handleSelectCell(cellId); return; }
     if (isEditingFormula) { insertReference(cellId); return; }
     setSelectedCellId(cellId);
     setLegacyTarget(null);
@@ -206,29 +250,36 @@ export function WorksheetSurface(props: SurfaceProps) {
     const isFormula = raw.startsWith("=");
     if (isFormula && !raw.slice(1).trim()) { setToolbarError("Rumus wajib diisi setelah =."); return false; }
     const numeric = numericInput(raw);
+    const isVolume = isAhsVolumeCell(snapshot, target);
+    if (isVolume && raw && !isFormula && !numericText.test(numeric)) {
+      setToolbarError("Volume AHS wajib berupa angka. Contoh: 50.000 atau 50000."); return false;
+    }
     const vendorName = snapshot.workbook?.offers.some(o => o.nameCellId === target.id);
     const isVendorCell = snapshot.worksheets.some(w => w.stage === "EVALUASI_VENDOR" && w.tables.some(t => t.id === target.tableId));
     const vendorAddress = isVendorCell ? addressOf(target.id) : "";
     const vendorText = isVendorCell && (/^B\d+$/.test(vendorAddress) || Number(vendorAddress.match(/\d+$/)?.[0]) <= 9 || /18$/.test(vendorAddress));
     const isVendorComponent = isVendorCell && snapshot.analysis.offers.some(offer => vendorComponents(snapshot, offer.id).some(component => component.source.id === target.id));
-    const isTextCell = vendorName || vendorText || (!isVendorComponent && (presentations.get(target.id)?.unit === "text" || (!snapshot.workbook && target.source.kind === "INPUT" && target.source.input.kind === "TEXT")));
+    const isTextCell = !isVolume && (vendorName || vendorText || (!isVendorComponent && (presentations.get(target.id)?.unit === "text" || (!snapshot.workbook && target.source.kind === "INPUT" && target.source.input.kind === "TEXT"))));
     const isNumber = !isTextCell && numericText.test(numeric);
     const saved = apply(() => {
       if (isFormula) return setCellFormula(snapshot, target.id, resolveFormula(raw.slice(1), snapshot, target.id));
       const cleared = target.source.kind === "FORMULA" ? clearCellSource(snapshot, target.id) : snapshot;
       const input = raw ? { kind: isNumber ? "NUMERIC_TEXT" as const : "TEXT" as const, text: isNumber ? numeric : raw } : { kind: "UNSET" as const };
       if (isVendorCell) return updateCellInput(cleared, target.scope, target.id, input);
-      if (cleared.workbook) return editSheetInput(cleared, { ...target, source: { kind: "INPUT", input: { kind: "UNSET" } } }, input, history?.map(h => h.revision.snapshot));
+      if (cleared.workbook) return editSheetInput(cleared, { ...target, source: { kind: "INPUT", input: { kind: "UNSET" } } }, input);
       return updateCellInput(cleared, target.scope, target.id, input);
     });
     if (saved) { setIsEditingFormula(false); setFormulaExpression(isFormula ? raw : isNumber ? numeric : raw); }
     return saved;
   }
 
-  function vendorCellEditor(cell: CellSnapshot, label: string) {
+  function worksheetCellEditor(cell: CellSnapshot, label: string) {
+    if (snapshot && isAhsVolumeFollower(snapshot, cell)) return <button type="button" className="cell-readout sheet-result" disabled={disabled}
+      aria-label={label} title="Mengikuti Volume Harga Jual · Harga Dasar" onClick={() => handleSelectCell(cell.id)}>{cellValue(cell)}</button>;
     const raw = cell.source.kind === "FORMULA" ? "=" + storedExpression(cell.id)
       : cell.source.kind === "INPUT" && cell.source.input.kind !== "UNSET" ? cell.source.input.text : "";
     return <WorksheetCellInput key={cell.id + ":" + raw} label={label} raw={raw} shown={cellValue(cell)} selected={selectedCellId === cell.id}
+      needsCommit={!!snapshot && isAhsVolumeCell(snapshot, cell) && cell.source.kind === "INPUT" && cell.source.input.kind === "TEXT"}
       editing={isEditingFormula} expression={formulaExpression} disabled={disabled} onFocusInput={input => { formulaCellInputRef.current = input; }}
       onSelect={() => handleSelectCell(cell.id)} onDraft={value => { setFormulaExpression(value); setIsEditingFormula(value.trimStart().startsWith("=")); onEditing?.(); }}
       onCommit={value => commitCellValue(cell, value)} onCancel={cancelFormula} />;
@@ -257,7 +308,7 @@ export function WorksheetSurface(props: SurfaceProps) {
   function handleClearCell() {
     if (!selectedCell || !snapshot) return;
     if (apply(() => selectedCell.source.kind === "INPUT" && snapshot.workbook
-      ? editSheetInput(snapshot, selectedCell, { kind: "UNSET" }, history?.map(h => h.revision.snapshot))
+      ? editSheetInput(snapshot, selectedCell, { kind: "UNSET" })
       : clearCellSource(snapshot, selectedCell.id))) { setFormulaExpression(""); setIsEditingFormula(false); }
   }
 
@@ -277,6 +328,7 @@ export function WorksheetSurface(props: SurfaceProps) {
 
   function handleAddRow() {
     if (!selectedTable || !snapshot) return;
+    if (snapshot.worksheets.some(w => w.stage === "EVALUASI_VENDOR" && w.tables.some(t => t.id === selectedTable.id))) { openAddComponentDialog(); return; }
     const label = `Baris ${selectedTable.rowOrder.length + 1}`;
     apply(() => addRow(snapshot, selectedTable.id, { label, scope: snapshot.activeProfile }));
   }
@@ -331,14 +383,35 @@ export function WorksheetSurface(props: SurfaceProps) {
     removeVendorDialogRef.current?.showModal();
   }
 
+  function openAddComponentDialog() {
+    setNewComponentName(""); setToolbarError("");
+    addComponentDialogRef.current?.showModal();
+  }
+
+  function handleAddComponent(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!snapshot || disabled) return;
+    let firstCellId: StableId<"cell"> | undefined;
+    const saved = apply(() => {
+      const added = addVendorComponent(snapshot, newComponentName);
+      firstCellId = added.firstCellId;
+      return added.snapshot;
+    });
+    if (saved && firstCellId) {
+      addComponentDialogRef.current?.close();
+      setSelectedCellId(firstCellId); setLegacyTarget(null); setFormulaExpression(""); setIsEditingFormula(false);
+      requestAnimationFrame(() => sheetRef.current?.querySelector<HTMLInputElement>(`[data-cell-id="${firstCellId}"] .sheet-input`)?.focus());
+    }
+  }
+
   function createVendor(current: WorkbookSnapshot, name: string, columnId?: StableId<"column">) {
     if (current.workbook) {
       const patterns = ["C", "D", "E"] as const;
       return addSheetVendor(current, name, patterns[Math.min(current.workbook.offers.length, 2)]!, columnId);
     }
     const vendorId = id<"vendor">(), offerId = id<"offer">();
-    return addOffer(addVendor(current, { id: vendorId, analysisId: current.analysisId, name }),
-      { id: offerId, analysisId: current.analysisId, vendorId, label: name });
+    return includeNewVendorComponentTotals(prepareLegacySheet(addOffer(addVendor(current, { id: vendorId, analysisId: current.analysisId, name }),
+      { id: offerId, analysisId: current.analysisId, vendorId, label: name })), offerId);
   }
 
   function handleProfileChange(profile: Profile) {
@@ -374,6 +447,9 @@ export function WorksheetSurface(props: SurfaceProps) {
   function cellValue(cell: CellSnapshot | undefined, format: "number" | "percentage" | "fixed-number" = "number") {
     if (!cell) return "";
     const result = results.get(cell.id);
+    if (format === "number" && cell.scope === "INU" && (result?.writer === "INU_SOLVER" || cell.id === snapshot?.profiles.INU.hppBase.cellId)) format = "fixed-number";
+    const title = result && "text" in result ? result.text : cell.source.kind === "INPUT" && cell.source.input.kind === "TEXT" ? cell.source.input.text : "";
+    if (codes.get(cell.id) === "EV!B3" && title.trim().toUpperCase() === "EVALUASI HARGA VENDOR") return "EVALUASI VENDOR";
     if (result) return "value" in result ? format === "percentage" ? sheetPercent(result.value) : format === "fixed-number" ? sheetNumberFixed(result.value) : sheetNumber(result.value) : "text" in result ? result.text
       : "code" in result && result.code === "WAITING_INPUT" ? "" : result.status === "EMPTY" || cell.source.kind === "INPUT" ? "" : result.status;
     return cell.source.kind === "INPUT" && cell.source.input.kind !== "UNSET"
@@ -392,7 +468,46 @@ export function WorksheetSurface(props: SurfaceProps) {
   const selectedVendorOfferId = snapshot.analysis.offerRevisions.find(revision => revision.id === snapshot.selectedOfferRevisionId)?.offerId;
   const selectedVendorComponents = selectedVendorOfferId ? vendorComponents(snapshot, selectedVendorOfferId) : [];
   const componentLabel = (component: (typeof selectedVendorComponents)[number]) => component.labelCell ? cellValue(component.labelCell) : component.role;
-  const removeVendorDialog = <dialog ref={removeVendorDialogRef} className="vendor-delete-dialog" aria-labelledby="vendor-delete-title">
+  const removableComponents = removableVendorComponents(snapshot);
+  const vendorActions = <details className="vendor-table-actions" ref={vendorMenuRef} onClick={event => event.stopPropagation()}
+    onToggle={event => { if (event.currentTarget.open) requestAnimationFrame(() => {
+      const menu = vendorMenuRef.current;
+      if (menu?.open && document.activeElement === menu.querySelector("summary")) menu.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+    }); }}
+    onBlur={event => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false; }}
+    onKeyDown={event => {
+      if (event.key === "Escape") { event.preventDefault(); event.currentTarget.open = false; focusVendorMenu(); return; }
+      if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+      event.preventDefault(); event.currentTarget.open = true;
+      const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
+      const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
+      const index = event.key === "Home" ? 0 : event.key === "End" || (current < 0 && event.key === "ArrowUp") ? buttons.length - 1 : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
+      buttons[index]?.focus();
+    }}>
+    <summary aria-label="Aksi Evaluasi Vendor" aria-haspopup="menu" title="Aksi Evaluasi Vendor">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="12" cy="19" r="1.8" /></svg>
+    </summary>
+    <div role="menu" aria-label="Aksi Evaluasi Vendor">
+      <button type="button" role="menuitem" disabled={disabled} onClick={() => menuAction(openAddComponentDialog)}>Tambah uraian</button>
+      <button type="button" role="menuitem" className="menu-danger" disabled={disabled || !configuration || !removableComponents.length} onClick={() => menuAction(openRemoveComponentDialog)}>Hapus uraian</button>
+      <button type="button" role="menuitem" disabled={disabled} onClick={() => menuAction(handleAddVendor)}>Tambah vendor</button>
+      <button type="button" role="menuitem" className="menu-danger" disabled={disabled || snapshot.analysis.offers.length <= 3} title={snapshot.analysis.offers.length <= 3 ? "Minimal 3 vendor" : undefined} onClick={() => menuAction(openRemoveVendorDialog)}>Hapus vendor</button>
+    </div>
+  </details>;
+  const removeComponentDialog = <dialog ref={removeComponentDialogRef} onClose={focusVendorMenu} className="vendor-delete-dialog" aria-labelledby="vendor-component-delete-title">
+    <form onSubmit={handleRemoveComponent}>
+      <header><div><h2 id="vendor-component-delete-title">Hapus uraian</h2><p>Uraian dan nilainya akan dihapus dari seluruh vendor serta Konversi.</p></div>
+        <button type="button" className="dialog-close" aria-label="Tutup" onClick={() => removeComponentDialogRef.current?.close()}>×</button></header>
+      <div className="vendor-delete-list">{removableComponents.map(component => <label key={component.labelCell!.id} className={componentToRemove === component.labelCell!.id ? "is-selected" : undefined}>
+        <input type="radio" name="componentToRemove" value={component.labelCell!.id} checked={componentToRemove === component.labelCell!.id} onChange={() => setComponentToRemove(component.labelCell!.id)} />
+        <strong>{componentLabel(component) || "Uraian tanpa nama"}</strong>
+      </label>)}</div>
+      {toolbarError && <p role="alert" className="vendor-delete-error">{toolbarError}</p>}
+      <footer><button type="button" onClick={() => removeComponentDialogRef.current?.close()}>Batal</button>
+        <button type="submit" className="vendor-delete-confirm" disabled={disabled || !configuration || !componentToRemove}>Hapus uraian</button></footer>
+    </form>
+  </dialog>;
+  const removeVendorDialog = <dialog ref={removeVendorDialogRef} onClose={focusVendorMenu} className="vendor-delete-dialog" aria-labelledby="vendor-delete-title">
     <form onSubmit={event => { event.preventDefault(); handleRemoveVendor(); }}>
       <header><div><h2 id="vendor-delete-title">Hapus vendor</h2><p>Pilih vendor dari Evaluasi Vendor. Minimal 3 vendor tetap tersedia.</p></div>
         <button type="button" className="dialog-close" aria-label="Tutup" onClick={() => removeVendorDialogRef.current?.close()}>×</button></header>
@@ -408,6 +523,17 @@ export function WorksheetSurface(props: SurfaceProps) {
       {toolbarError && <p role="alert" className="vendor-delete-error">{toolbarError}</p>}
       <footer><button type="button" onClick={() => removeVendorDialogRef.current?.close()}>Batal</button>
         <button type="submit" className="vendor-delete-confirm" disabled={disabled || !vendorToRemove || snapshot.analysis.offers.length <= 3}>Hapus vendor</button></footer>
+    </form>
+  </dialog>;
+  const addComponentDialog = <dialog ref={addComponentDialogRef} onClose={focusVendorMenu} className="vendor-delete-dialog" aria-labelledby="vendor-component-title">
+    <form onSubmit={handleAddComponent}>
+      <header><div><h2 id="vendor-component-title">Tambah uraian</h2><p>Nilai otomatis masuk ke total setiap vendor.</p></div>
+        <button type="button" className="dialog-close" aria-label="Tutup" onClick={() => addComponentDialogRef.current?.close()}>×</button></header>
+      <label htmlFor="vendor-component-name">Nama uraian</label>
+      <input id="vendor-component-name" name="componentName" value={newComponentName} onChange={event => setNewComponentName(event.target.value)} required autoFocus placeholder="Contoh: Biaya administrasi" />
+      {toolbarError && <p role="alert" className="vendor-delete-error">{toolbarError}</p>}
+      <footer><button type="button" onClick={() => addComponentDialogRef.current?.close()}>Batal</button>
+        <button type="submit" className="vendor-component-confirm" disabled={disabled || !newComponentName.trim()}>Tambah uraian</button></footer>
     </form>
   </dialog>;
 
@@ -557,14 +683,14 @@ export function WorksheetSurface(props: SurfaceProps) {
                     const sourceMapping = stage === "KONVERSI_JAGAD" && colIndex === 0 ? snapshot.mappings.find(mapping => mapping.sourceComponent.startsWith("vendor-live:") &&
                       table.cells.some(target => target.id === mapping.targetCellId && target.rowId === rowId)) : undefined;
                     const sourceComponent = selectedVendorComponents.find(component => component.source.id === sourceMapping?.sourceCellId);
-                    if (stage === "EVALUASI_VENDOR") {
-                      displayContent = vendorCellEditor(cell, `Evaluasi Vendor · ${cellAddress}`);
+                    if (stage === "EVALUASI_VENDOR" || isAhsVolumeCell(snapshot, cell)) {
+                      displayContent = worksheetCellEditor(cell, stage === "EVALUASI_VENDOR" ? `Evaluasi Vendor · ${cellAddress}` : `Lembar AHS · Volume · ${cellAddress}`);
                     } else if (sourceComponent) {
                       displayContent = <span className="sheet-result">{componentLabel(sourceComponent)}</span>;
                     } else if (stage === "KONVERSI_JAGAD" && cell.id === binding(snapshot, snapshot.activeProfile, "supplierName")) {
                       displayContent = <>{vendorDropdown()}<span className="cell-print-value vendor-print-name">{cellValue(cell)}</span></>;
                     } else if (stage === "KONVERSI_JAGAD" && isINU && meta?.address === "D30" && run?.solver?.cost) {
-                      displayContent = <span className="sheet-result" title={run.solver.cost}>{sheetNumber(run.solver.cost)}</span>;
+                      displayContent = <span className="sheet-result" title={run.solver.cost}>{sheetNumberFixed(run.solver.cost)}</span>;
                     } else if (meta?.kind === "LABEL") {
                       displayContent = <span className="sheet-result">{stage === "KONVERSI_JAGAD" && rowNum === 23 ? "Konversi Satuan Jagad" : cellValue(cell)}</span>;
                     } else if (isSelected && isEditingFormula) {
@@ -648,7 +774,8 @@ export function WorksheetSurface(props: SurfaceProps) {
                         onClick={event => { if (!(event.target instanceof HTMLInputElement)) handleSelectCell(cell.id); }}
                       >
                         {colMeta?.label === "I" && stage === "AHS" && rowNum >= 14 && rowNum <= 33 && <span>Rp</span>}
-                        {displayContent}
+                        {trClass === "vendor-title" && colIndex === row.findIndex(item => item?.cell) ?
+                          <div className="vendor-title-layout"><div className="vendor-title-content">{displayContent}</div>{vendorActions}</div> : displayContent}
                       </CellTag>
                     );
                   })}
@@ -664,6 +791,8 @@ export function WorksheetSurface(props: SurfaceProps) {
     return (
       <div className="sheet-viewport" aria-label="Lembar procurement" tabIndex={0}>
         {removeVendorDialog}
+        {addComponentDialog}
+        {removeComponentDialog}
         <div ref={sheetRef} className="procurement-sheet" style={sheetStyle} data-testid="procurement-sheet">
           <header className="sheet-overview">
             <div><p className="eyebrow">PROCUREMENT WORKSPACE · {isINU ? "INU" : "SOLAR BAWAH"}</p>
@@ -689,17 +818,16 @@ export function WorksheetSurface(props: SurfaceProps) {
                   aria-label="Formula sel terpilih"
                   value={formulaExpression}
                   data-editing={isEditingFormula}
+                  readOnly={selectedVolumeFollower}
                   onChange={e => { setIsEditingFormula(true); setFormulaExpression(e.target.value); onEditing?.(); }}
                   onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); cancelFormula(); } }}
                   placeholder={selectedCell ? "Ketik formula atau klik sel lain untuk menyisipkan referensi" : "Pilih sel pada tabel"}
                   disabled={disabled || (!selectedCell && !legacyTarget)}
                 />
-                <button className="toolbar-button toolbar-button-primary" type="submit" disabled={disabled || (!selectedCell && !legacyTarget)}>Terapkan</button>
+                <button className="toolbar-button toolbar-button-primary" type="submit" disabled={disabled || selectedVolumeFollower || (!selectedCell && !legacyTarget)}>Terapkan</button>
                 {isEditingFormula && <button className="toolbar-button" type="button" onClick={cancelFormula}>Batal edit</button>}
               </form>
-              <button className="toolbar-button toolbar-button-primary" type="button" disabled={disabled} onClick={handleAddVendor}>＋ Tambah vendor</button>
-              <button className="toolbar-button toolbar-button-danger" type="button" disabled={disabled || offers.length <= 3} onClick={openRemoveVendorDialog}>− Hapus vendor</button>
-              {onSave && <button className="toolbar-button toolbar-button-save" type="button" disabled={disabled} onClick={onSave}>Simpan perubahan</button>}
+              {onSave && <button className="toolbar-button toolbar-button-save" type="button" aria-busy={saving} disabled={disabled || saving} onClick={onSave}>{saving ? "Menyimpan…" : "Simpan perubahan"}</button>}
             </div>
             {formulaMeaning && <p className="formula-meaning">Arti rumus: {formulaMeaning}</p>}
             <details className="structure-details"><summary>Aksi struktur</summary><div className="toolbar-row actions-row">
@@ -712,7 +840,7 @@ export function WorksheetSurface(props: SurfaceProps) {
                 </form>
               </div>
               <div className="toolbar-group structure-group">
-                <button type="button" disabled={disabled || !selectedCell} onClick={handleClearCell}>Kosongkan sel</button>
+                <button type="button" disabled={disabled || selectedVolumeFollower || !selectedCell} onClick={handleClearCell}>Kosongkan sel</button>
                 <button type="button" disabled={disabled || !selectedTable} onClick={handleAddRow}>+ Baris</button>
                 <button type="button" disabled={disabled || !selectedTable} onClick={handleAddColumn}>+ Kolom</button>
                 <button type="button" disabled={disabled || !selectedCell} onClick={handleRemoveRow}>Hapus baris</button>
@@ -731,8 +859,9 @@ export function WorksheetSurface(props: SurfaceProps) {
           {/* 2. Left Column: Evaluasi Vendor & Konversi */}
           <div className="sheet-left">
             <section className="sheet-card vendor-card" aria-label="Evaluasi Vendor">
-              <div className="sheet-section-title"><h2>Evaluasi harga vendor</h2></div>
-              {vendorTables.map(table => renderTableGrid(table, "EVALUASI_VENDOR", "vendor-sheet", "Evaluasi harga vendor"))}
+              <div className="vendor-table-container">
+              {vendorTables.map(table => renderTableGrid(table, "EVALUASI_VENDOR", "vendor-sheet", "Evaluasi Vendor"))}
+              </div>
             </section>
 
             {/* Konversi section with the required INU toggle */}
@@ -747,7 +876,7 @@ export function WorksheetSurface(props: SurfaceProps) {
               </label>
               {isINU && run?.solver && (
                 <span className="solver-status" aria-live="polite">
-                  Biaya: <strong>{run.solver.cost === null ? "—" : sheetNumber(run.solver.cost)}</strong> · Profit MUE: <strong>{run.solver.profit === null ? "—" : sheetNumberFixed(run.solver.profit)}</strong> ({run.solver.status})
+                  Biaya: <strong>{run.solver.cost === null ? "—" : sheetNumberFixed(run.solver.cost)}</strong> · Profit MUE: <strong>{run.solver.profit === null ? "—" : sheetNumberFixed(run.solver.profit)}</strong> ({run.solver.status})
                 </span>
               )}
             </div>
@@ -801,7 +930,7 @@ export function WorksheetSurface(props: SurfaceProps) {
     const code = cell ? codes.get(cell.id) : undefined;
     const solverCost = stage === "KONVERSI_JAGAD" && label === "Biaya · Harga Dasar" && isINU && !!run?.solver;
     let content: ReactNode;
-    if (stage === "EVALUASI_VENDOR" && cell) content = vendorCellEditor(cell, `Evaluasi Vendor · ${label}`);
+    if (cell && (stage === "EVALUASI_VENDOR" || (snapshot && isAhsVolumeCell(snapshot, cell)))) content = worksheetCellEditor(cell, `${stage === "EVALUASI_VENDOR" ? "Evaluasi Vendor" : "Lembar AHS"} · ${label}`);
     else if (cell?.source.kind === "FORMULA" && !pinned && !solverCost && cell.id !== snapshot?.profiles[snapshot.activeProfile].hppBase.cellId) {
       const raw = "=" + storedExpression(cell.id), shown = cellValue(cell, label === "PERSENTASE" ? "percentage" : label === "Profit MUE" ? "fixed-number" : "number");
       content = (<Fragment key={cell.id + ":" + raw}><input className="sheet-input" aria-label={`Lembar ${stage} · ${label}`}
@@ -872,8 +1001,7 @@ export function WorksheetSurface(props: SurfaceProps) {
       vendor: snapshot.analysis.vendors.find(v => v.id === offer.vendorId)! };
   }) ?? [];
   const legacyVendorColumns = Math.max(3, legacyOffers.length);
-  const extraVendorRows = [...new Set(legacyOffers.flatMap(o => o.revision?.values.map(v => v.label) ?? []))]
-    .filter(label => !label.startsWith("formula:") && !["Nama vendor", "Notes", "TOTAL", ...vendorRows].some(row => normalized(row) === normalized(label)));
+  const legacyComponentRows = legacyOffers[0] ? vendorComponents(snapshot, legacyOffers[0].offer.id).filter(component => component.role !== "TOTAL") : [];
   const hpp = fields.find(f => f.cell.id === snapshot?.profiles[snapshot.activeProfile].hppBase.cellId)?.cell;
   const header = (label: string, className: string) => <tr key={label} className={className}><th colSpan={5}>{label}</th><td>{legacySlot("AHS", label)}</td></tr>;
   const conversionColumns = ["Harga INU", "Biaya"];
@@ -888,6 +1016,8 @@ export function WorksheetSurface(props: SurfaceProps) {
   return (
     <div className="sheet-viewport" aria-label="Lembar procurement" tabIndex={0}>
       {removeVendorDialog}
+      {addComponentDialog}
+      {removeComponentDialog}
       <div ref={sheetRef} className="procurement-sheet" style={sheetStyle} data-testid="procurement-sheet">
         <header className="sheet-overview">
           <div><p className="eyebrow">PROCUREMENT WORKSPACE · {isINU ? "INU" : "SOLAR BAWAH"}</p>
@@ -905,26 +1035,25 @@ export function WorksheetSurface(props: SurfaceProps) {
             <span className="editor-cell-address" aria-label="Alamat sel">{activeCellAddress}</span>
             <form className="formula-bar-form" onSubmit={handleApplyFormula}>
               <input ref={formulaInputRef} aria-label="Formula sel terpilih" value={formulaExpression} data-editing={isEditingFormula}
+                readOnly={selectedVolumeFollower}
                 disabled={disabled || (!selectedCell && !legacyTarget)}
                 onChange={event => { setIsEditingFormula(true); setFormulaExpression(event.target.value); onEditing?.(); }}
                 onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); cancelFormula(); } }}
                 placeholder="Ketik = lalu klik sel sumber" />
-              <button className="toolbar-button toolbar-button-primary" disabled={disabled || (!selectedCell && !legacyTarget)}>Terapkan</button>
+              <button className="toolbar-button toolbar-button-primary" disabled={disabled || selectedVolumeFollower || (!selectedCell && !legacyTarget)}>Terapkan</button>
               {isEditingFormula && <button className="toolbar-button" type="button" onClick={cancelFormula}>Batal edit</button>}
             </form>
-            <button className="toolbar-button toolbar-button-primary" type="button" disabled={disabled} onClick={handleAddVendor}>＋ Tambah vendor</button>
-            <button className="toolbar-button toolbar-button-danger" type="button" disabled={disabled || legacyOffers.length <= 3} onClick={openRemoveVendorDialog}>− Hapus vendor</button>
-            {onSave && <button className="toolbar-button toolbar-button-save" type="button" disabled={disabled} onClick={onSave}>Simpan perubahan</button>}
+            {onSave && <button className="toolbar-button toolbar-button-save" type="button" aria-busy={saving} disabled={disabled || saving} onClick={onSave}>{saving ? "Menyimpan…" : "Simpan perubahan"}</button>}
           </div>
           {formulaMeaning && <p className="formula-meaning">Arti rumus: {formulaMeaning}</p>}
           {toolbarError && <div className="toolbar-error" role="alert">{toolbarError}</div>}
           {selectedDiagnostic && <div className="toolbar-error" role="status">{selectedDiagnostic}</div>}
         </div>
         <div className="sheet-left">
-          <div className="sheet-section-title"><h2>Evaluasi harga vendor</h2></div>
-          <table className="vendor-sheet" aria-label="Evaluasi harga vendor">
+          <div className="vendor-table-container">
+          <table className="vendor-sheet" aria-label="Evaluasi Vendor">
             <colgroup>{Array.from({ length: legacyVendorColumns + 1 }, (_, i) => <col key={i} className={i > 0 && selected && selected.offerId !== legacyOffers[i - 1]?.offer.id ? "vendor-unselected" : undefined} />)}</colgroup>
-            <thead><tr className="vendor-title"><th colSpan={legacyVendorColumns + 1}>{vendorSlot("B3", "Judul")}</th></tr></thead>
+            <thead><tr className="vendor-title"><th colSpan={legacyVendorColumns + 1}><div className="vendor-title-layout"><div className="vendor-title-content">{vendorSlot("B3", "Judul")}</div>{vendorActions}</div></th></tr></thead>
             <tbody>
               <tr className="sheet-spacer"><td colSpan={legacyVendorColumns + 1}>{vendorSlot("B4", "Baris 4")}</td></tr>
               {["Pekerjaan / Material", "Customer", "Lokasi"].map((label, index) => (
@@ -937,11 +1066,13 @@ export function WorksheetSurface(props: SurfaceProps) {
               <tr className="vendor-columns"><th>{vendorSlot("B9", "Uraian")}</th>{legacyOffers.map((entry, index) => (
                 <th key={entry.offer.id} className={selected && selected.offerId !== entry.offer.id ? "vendor-unselected" : undefined}>{vendorSlot(`${vendorColumn(index)}9`, `Nama vendor ${index + 1}`)}</th>
               ))}</tr>
-              {[...vendorRows, ...extraVendorRows].map((label, index) => {
-                const row = index < vendorRows.length ? index + 10 : index - vendorRows.length + 19;
-                return <tr key={label}><td>{vendorSlot(`B${row}`, `Label ${label}`)}</td>{legacyOffers.map((entry, vendorIndex) => (
-                  <td className={`sheet-number${selected && selected.offerId !== entry.offer.id ? " vendor-unselected" : ""}`} key={entry.offer.id}>{vendorSlot(`${vendorColumn(vendorIndex)}${row}`, `${entry.vendor.name} · ${label}`)}</td>
-                ))}</tr>;
+              {legacyComponentRows.map(component => {
+                const label = componentLabel(component);
+                return <tr key={component.labelCell?.id ?? component.source.id}><td>{component.labelCell ? legacySlot("EVALUASI_VENDOR", `Uraian ${label}`, "TEXT", component.labelCell) : label}</td>{legacyOffers.map(entry => {
+                  const value = vendorComponents(snapshot, entry.offer.id).find(other => component.labelCell ? other.labelCell?.id === component.labelCell.id : other.role === component.role)?.source;
+                  return <td className={`sheet-number${selected && selected.offerId !== entry.offer.id ? " vendor-unselected" : ""}`} key={entry.offer.id}>
+                    {value ? legacySlot("EVALUASI_VENDOR", `${entry.vendor.name} · ${label}`, "NUMERIC_TEXT", value) : ""}</td>;
+                })}</tr>;
               })}
               <tr className="vendor-total"><td>{vendorSlot("B17", "Label TOTAL")}</td>{legacyOffers.map((entry, index) => (
                 <td className={selected && selected.offerId !== entry.offer.id ? "vendor-unselected" : undefined} key={entry.offer.id}>{vendorSlot(`${vendorColumn(index)}17`, `${entry.vendor.name} · TOTAL`)}</td>
@@ -951,6 +1082,7 @@ export function WorksheetSurface(props: SurfaceProps) {
               ))}</tr>
             </tbody>
           </table>
+          </div>
 
           <div className="conversion-control-bar">
             <label className="profile-picker">Profil Konversi

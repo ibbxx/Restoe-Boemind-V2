@@ -6,6 +6,7 @@ import { PROFILES, parseProfile } from "./profiles.ts";
 import { requireCondition, parseSnapshot } from "./validation.ts";
 import { changeWorkbook } from "./workflow.ts";
 import { parseFormula, references } from "../engine/parser.ts";
+import { isAhsVolumeCell, requireAhsVolumeEditable } from "./ahs-volume.ts";
 
 // Structural commands stay pure domain transitions: every call returns a new,
 // validated snapshot via `changeWorkbook`, never a mutated one.
@@ -75,6 +76,8 @@ function mergeCoveredCellIds(table: TableSnapshot, merge: TableMerge): string[] 
 }
 
 function cellInUse(s: WorkbookSnapshot, cellId: StableId<"cell">): boolean {
+  const cell = findCell(s, cellId);
+  if (cell && isAhsVolumeCell(s, cell)) return true;
   if (s.workbook?.bindings.some(b => b.cellId === cellId) || s.workbook?.offers.some(o => o.baseCellId === cellId || o.nameCellId === cellId)) return true;
   if (s.workbook?.configuration?.aggregates.some(a => a.memberCellIds.includes(cellId)) || s.workbook?.configuration?.selectionDependentCellIds.includes(cellId)) return true;
   if (s.formulas.some(f => f.referenceCellIds.includes(cellId))) return true;
@@ -221,6 +224,7 @@ export function setCellFormula(snapshot: unknown, cellId: unknown, expression: s
   const target = parseStableId<"cell">(cellId);
   const cell = findCell(s, target);
   requireCondition(cell, "Sel tidak ditemukan.");
+  requireAhsVolumeEditable(s, cell);
   const vendorCell = s.worksheets.some(w => w.stage === "EVALUASI_VENDOR" && w.tables.some(t => t.id === cell.tableId));
   requireCondition(vendorCell || !s.workbook?.cells.some(p => p.cellId === target && (p.kind === "LABEL" || (p.kind === "RESULT" && cell.source.kind !== "FORMULA"))),
     "Sel label atau hasil tidak boleh ditimpa formula.");
@@ -263,6 +267,7 @@ export function clearCellSource(snapshot: unknown, cellId: unknown) {
   const target = parseStableId<"cell">(cellId);
   const cell = findCell(s, target);
   requireCondition(cell, "Sel tidak ditemukan.");
+  requireAhsVolumeEditable(s, cell);
   const vendorCell = s.worksheets.some(w => w.stage === "EVALUASI_VENDOR" && w.tables.some(t => t.id === cell.tableId));
   requireCondition(vendorCell || !s.workbook?.cells.some(p => p.cellId === target && p.kind === "LABEL"), "Sel label tidak boleh dikosongkan.");
   requireCondition(!s.workbook?.bindings.some(b => b.cellId === target && ["cost", "supplier", "supplierName"].includes(b.key)), "Sel ini dikelola pilihan vendor atau solver.");

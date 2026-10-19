@@ -2,7 +2,7 @@ import type { CellInput, OfferRevision, WorkbookSnapshot } from "./contracts.ts"
 import { createStableId as id } from "./ids.ts";
 import type { StableId } from "./ids.ts";
 import { canonicalJson } from "./snapshots.ts";
-import { changeWorkbook, nextOfferRevisionNumber } from "./workflow.ts";
+import { changeWorkbook } from "./workflow.ts";
 import type { EngineConfiguration, NodeResult } from "../engine/contracts.ts";
 import { compileGraph } from "../engine/graph.ts";
 import { evaluateNode } from "../engine/evaluator.ts";
@@ -11,7 +11,7 @@ import { DecimalArithmetic } from "../engine/decimal.ts";
 type OfferValue = OfferRevision["values"][number];
 
 // Keep current vendor values; selection follows the same vendor as its inputs change.
-export function recordVendorRevisions(s: WorkbookSnapshot, configuration: EngineConfiguration | null): WorkbookSnapshot {
+export function refreshCurrentOffers(s: WorkbookSnapshot, configuration: EngineConfiguration | null): WorkbookSnapshot {
   if (!configuration) return s;
   const tables = s.worksheets.filter(w => w.stage === "EVALUASI_VENDOR").flatMap(w => w.tables);
   const graph = compileGraph(s, configuration), needed = new Set<string>();
@@ -36,10 +36,14 @@ export function recordVendorRevisions(s: WorkbookSnapshot, configuration: Engine
     if ((result.status === "VALUE" || result.status === "ZERO") && (assumeZero || assumedDependencies.size)) assumed.add(cellId);
   }
   const formulas = new Map(s.formulas.filter(f => f.activation === "ACTIVE").map(f => [f.targetCellId, f]));
-  const revisions = [...s.analysis.offerRevisions], names = new Map<string, string>(), heads = new Map<StableId<"offer">, StableId<"offer-revision">>();
+  const revisions: OfferRevision[] = [];
+  const names = new Map<string, string>(), heads = new Map<StableId<"offer">, StableId<"offer-revision">>();
   const comparable = (values: readonly OfferValue[]) => canonicalJson(values.map(v => ({ label: v.label, input: v.input })).sort((a, b) => a.label.localeCompare(b.label)));
   for (const offer of s.analysis.offers) {
     const column = s.workbook?.offers.find(o => o.offerId === offer.id);
+    const previous = s.analysis.offerRevisions.filter(r => r.offerId === offer.id).reduce<OfferRevision | undefined>(
+      (latest, r) => !latest || r.revisionNumber > latest.revisionNumber ? r : latest, undefined);
+    const valueId = (label: string) => previous?.values.find(v => v.label === label)?.id ?? id<"offer-value">();
     const values: OfferValue[] = [];
     for (const table of tables) for (const cell of table.cells) {
       const row = table.rows.find(r => r.id === cell.rowId)?.label ?? "";
@@ -49,17 +53,18 @@ export function recordVendorRevisions(s: WorkbookSnapshot, configuration: Engine
       const result = results.get(cell.id);
       const input: CellInput = cell.source.kind === "INPUT" ? cell.source.input : result && "value" in result
         ? { kind: "NUMERIC_TEXT", text: result.value } : result?.status === "TEXT" ? { kind: "TEXT", text: result.text } : { kind: "UNSET" };
-      values.push({ id: id<"offer-value">(), label, input });
+      values.push({ id: valueId(label), label, input });
       const formula = formulas.get(cell.id);
-      if (formula) values.push({ id: id<"offer-value">(), label: `formula:${label}`, input: { kind: "TEXT", text: formula.expression } });
+      if (formula) values.push({ id: valueId(`formula:${label}`), label: `formula:${label}`, input: { kind: "TEXT", text: formula.expression } });
       if ((column ? cell.id === column.nameCellId : label === "Nama vendor") && input.kind === "TEXT" && input.text.trim()) names.set(offer.vendorId, input.text.trim());
     }
-    if (!values.length) continue;
-    const previous = s.analysis.offerRevisions.filter(r => r.offerId === offer.id).reduce<(typeof revisions)[number] | undefined>(
-      (latest, r) => !latest || r.revisionNumber > latest.revisionNumber ? r : latest, undefined);
-    if (previous && comparable(previous.values) === comparable(values)) { heads.set(offer.id, previous.id); continue; }
-    const revisionId = id<"offer-revision">();
-    revisions.push({ id: revisionId, offerId: offer.id, revisionNumber: nextOfferRevisionNumber(offer.id, [s]), values });
+    if (!values.length) {
+      if (previous) { revisions.push(previous); heads.set(offer.id, previous.id); }
+      continue;
+    }
+    if (previous && comparable(previous.values) === comparable(values)) { revisions.push(previous); heads.set(offer.id, previous.id); continue; }
+    const revisionId = previous?.id ?? id<"offer-revision">();
+    revisions.push({ id: revisionId, offerId: offer.id, revisionNumber: previous?.revisionNumber ?? 1, values });
     heads.set(offer.id, revisionId);
   }
   const renamed = s.analysis.vendors.some(v => names.has(v.id) && names.get(v.id) !== v.name);
@@ -67,9 +72,7 @@ export function recordVendorRevisions(s: WorkbookSnapshot, configuration: Engine
     const offerId = s.analysis.offerRevisions.find(revision => revision.id === revisionId)?.offerId;
     return offerId ? heads.get(offerId) ?? revisionId : revisionId;
   };
-  const retained = new Set([...heads.values(), ...Object.values(s.profiles).flatMap(profile => profile.reviewContext?.selectedOfferRevisionId ? [profile.reviewContext.selectedOfferRevisionId] : []),
-    ...s.calculationRunRefs.flatMap(run => run.selectedOfferRevisionId ? [run.selectedOfferRevisionId] : [])]);
-  const current = revisions.filter(revision => retained.has(revision.id));
+  const current = revisions;
   if (!renamed && canonicalJson(current) === canonicalJson(s.analysis.offerRevisions) && latest(s.selectedOfferRevisionId) === s.selectedOfferRevisionId &&
     (!s.workbook || Object.values(s.workbook.selections).every(revisionId => latest(revisionId) === revisionId))) return s;
   return changeWorkbook(s, {

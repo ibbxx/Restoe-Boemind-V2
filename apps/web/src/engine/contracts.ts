@@ -50,7 +50,6 @@ export interface EngineRun {
   readonly results: readonly NodeResult[];
   readonly evaluatedCellIds: readonly string[];
   readonly manifest: {
-    readonly revisionId: StableId<"revision"> | null;
     readonly snapshot: WorkbookSnapshot;
     readonly configuration: EngineConfiguration;
     readonly signatures: Readonly<Record<string, string>>;

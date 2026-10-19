@@ -1,37 +1,25 @@
-import type { SavedRevision, WorkbookSnapshot } from "../domain/contracts.ts";
+import type { WorkbookSnapshot } from "../domain/contracts.ts";
 import type { StableId } from "../domain/ids.ts";
+import type { EngineConfiguration } from "../engine/contracts.ts";
 
+export interface SavedWorkbook {
+  readonly snapshot: WorkbookSnapshot;
+  readonly configuration: EngineConfiguration | null;
+  readonly version: StableId<"version">;
+  readonly savedAt: string;
+  readonly savedBy: StableId<"user">;
+}
 export interface SaveRequest {
-  readonly intent: "SAVE_DRAFT" | "CONFIRM_RESULT";
-  readonly expectedRevisionId: StableId<"revision"> | null;
+  readonly expectedVersion: StableId<"version"> | null;
   readonly mutationId: StableId<"mutation">;
   readonly snapshot: WorkbookSnapshot;
-  readonly reason?: string;
+  readonly configuration: EngineConfiguration | null;
 }
-
 export type SaveOutcome =
-  | { readonly status: "SAVED"; readonly revision: SavedRevision }
-  | {
-      readonly status: "CONFLICT";
-      readonly code: "STALE_REVISION";
-      readonly expectedRevisionId: StableId<"revision"> | null;
-      readonly currentRevisionId: StableId<"revision"> | null;
-    }
-  | {
-      readonly status: "REJECTED";
-      readonly code: "INVALID_REQUEST" | "IDEMPOTENCY_CONFLICT" | "CONFIRMATION_UNAVAILABLE" | "INVALID_HISTORY_TRANSITION";
-      readonly reason: string;
-    };
-
-export interface RestoreRequest {
-  readonly reason?: string;
-  readonly analysisId: StableId<"analysis">;
-  readonly sourceRevisionId: StableId<"revision">;
-  readonly expectedRevisionId: StableId<"revision"> | null;
-  readonly mutationId: StableId<"mutation">;
-}
-
-// Identity and project permissions must come from the server session, not this request.
+  | { readonly status: "SAVED"; readonly workbook: SavedWorkbook }
+  | { readonly status: "CONFLICT"; readonly code: "STALE_VERSION";
+      readonly expectedVersion: StableId<"version"> | null; readonly currentVersion: StableId<"version"> | null }
+  | { readonly status: "REJECTED"; readonly code: "INVALID_REQUEST" | "IDEMPOTENCY_CONFLICT"; readonly reason: string };
 export interface WorkbookService {
   save(request: SaveRequest): Promise<SaveOutcome>;
 }

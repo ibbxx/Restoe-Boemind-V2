@@ -1,5 +1,4 @@
-import type { RevisionState, WorkbookSnapshot } from "./contracts.ts";
-import { parseStableId } from "./ids.ts";
+import type { WorkbookSnapshot } from "./contracts.ts";
 import { parseSnapshot, requireCondition } from "./validation.ts";
 
 export function freeze<T>(value: T): T {
@@ -10,7 +9,7 @@ export function freeze<T>(value: T): T {
   return value;
 }
 
-// Object keys are canonical; arrays retain explicit historical/display order.
+// Object keys are canonical; arrays retain explicit display order.
 export function canonicalJson(value: unknown): string {
   if (value === null || typeof value === "string" || typeof value === "boolean") return JSON.stringify(value);
   if (typeof value === "number") {
@@ -33,15 +32,4 @@ export function serializeSnapshot(value: unknown): string {
 
 export function deserializeSnapshot(serialized: string): WorkbookSnapshot {
   return captureSnapshot(JSON.parse(serialized));
-}
-
-export function createDraft(snapshot: unknown, baseRevisionId: unknown): Extract<RevisionState, { kind: "LOCAL_DRAFT" }> {
-  return freeze({ kind: "LOCAL_DRAFT", snapshot: captureSnapshot(snapshot),
-    baseRevisionId: baseRevisionId === null ? null : parseStableId<"revision">(baseRevisionId) });
-}
-
-// Proposed state only; no evaluated preview exists until an engine supplies a run.
-export function createPreview(snapshot: unknown, baseRevisionId: unknown): Extract<RevisionState, { kind: "PREVIEW" }> {
-  const draft = createDraft(snapshot, baseRevisionId);
-  return freeze({ ...draft, kind: "PREVIEW", run: null });
 }

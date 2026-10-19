@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>RBI · Pratinjau loading 3D</title>
+    <style>
+      * { box-sizing: border-box; }
+      [hidden] { display: none !important; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        min-height: 100svh;
+        display: grid;
+        place-items: center;
+        padding: 24px 16px;
+        background: radial-gradient(ellipse at 50% 42%, #fff 0%, #fff 24%, #f3f5fa 100%);
+        color: #14234b;
+        font-family: system-ui, sans-serif;
+      }
+      main { display: grid; justify-items: center; gap: 32px; width: 100%; }
+      .loader { display: grid; justify-items: center; gap: 0; }
+      .stage { position: relative; width: min(82vw, 420px); aspect-ratio: 1; }
+      canvas { display: block; width: 100%; height: 100%; }
+      .source-logo { position: absolute; left: 50%; top: 50%; width: 57.33%; height: auto; transform: translate(-42.44%, -46.33%); }
+      .is-comparing canvas, .is-unavailable canvas { visibility: hidden; }
+      .status { margin: 0; color: #68738c; font-size: 13px; font-weight: 500; letter-spacing: .08em; }
+      .controls { display: grid; gap: 18px; width: min(288px, 100%); }
+      .buttons { display: flex; justify-content: center; gap: 8px; }
+      button {
+        min-height: 40px;
+        padding: 9px 17px;
+        border: 1px solid #dce1ec;
+        border-radius: 999px;
+        background: #fff;
+        color: #344263;
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      button:hover { background: #f0f3f9; }
+      button[aria-pressed="true"] { border-color: #0f1e50; background: #eef1f8; }
+      button:disabled, input:disabled { cursor: default; opacity: .45; }
+      button:focus-visible, input:focus-visible { outline: 2px solid #e12923; outline-offset: 4px; }
+      .timeline { display: grid; grid-template-columns: auto 1fr 36px; align-items: center; gap: 12px; color: #758099; font-size: 11px; }
+      input[type="range"] { width: 100%; min-width: 0; margin: 0; accent-color: #152b64; }
+      output { text-align: right; font-variant-numeric: tabular-nums; }
+      .note { margin: 0; max-width: 320px; text-align: center; color: #758099; font-size: 12px; line-height: 1.6; }
+      .error { display: grid; justify-items: center; gap: 12px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="loader" role="status" aria-label="Memuat">
+        <div class="stage" id="stage" aria-hidden="true">
+          <img class="source-logo" id="source-logo" src="../assets/logo.png" width="172" height="177" alt="">
+        </div>
+        <p class="status" aria-hidden="true">Memuat…</p>
+      </div>
+      <div class="controls" id="controls" role="group" aria-label="Kontrol pratinjau animasi" hidden>
+        <div class="buttons">
+          <button id="toggle" type="button" aria-pressed="false">Jeda</button>
+          <button id="compare" type="button" aria-pressed="false">Logo asli</button>
+        </div>
+        <label class="timeline" for="phase">
+          <span>Posisi</span>
+          <input id="phase" type="range" min="0" max="100" step="1" value="0" aria-label="Posisi animasi">
+          <output id="position" for="phase">0%</output>
+        </label>
+        <p class="note" id="motion-note" hidden>Gerakan dijeda sesuai pengaturan perangkat. Tekan Putar untuk melihat animasi.</p>
+      </div>
+      <div class="error" id="error" role="alert" hidden>
+        <p class="note" id="error-message"></p>
+        <button id="retry" type="button">Coba lagi</button>
+      </div>
+      <noscript><p class="note">Aktifkan JavaScript untuk melihat animasi 3D.</p></noscript>
+    </main>
+    <script>
+      document.querySelector('#retry').addEventListener('click', () => location.reload());
+      if (location.protocol === 'file:') {
+        location.replace('http://127.0.0.1:8769/previews/logo-loading.html');
+      } else {
+        import('./logo-loading.js').then(module => module.start()).catch(error => {
+          console.error('Animasi logo 3D:', error);
+          document.querySelector('#error-message').textContent = 'Animasi 3D tidak dapat dimuat. Pastikan server lokal berjalan dan akselerasi grafis browser aktif.';
+          document.querySelector('#error').hidden = false;
+          document.querySelector('#controls').hidden = true;
+          document.querySelector('#stage').classList.add('is-unavailable');
+          document.querySelector('#source-logo').hidden = false;
+        });
+      }
+    </script>
+  </body>
+</html>

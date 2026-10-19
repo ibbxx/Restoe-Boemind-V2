@@ -1,7 +1,7 @@
 export type EntityKind =
   | "project" | "vendor" | "offer" | "offer-revision" | "offer-value"
   | "worksheet" | "table" | "row" | "column" | "cell" | "merge" | "formula" | "formula-version" | "snapshot"
-  | "policy" | "revision" | "run" | "user" | "mutation"
+  | "policy" | "revision" | "version" | "run" | "user" | "mutation"
   | "analysis" | "mapping" | "mapping-version" | "change-event" | "aggregate" | "aggregate-version";
 
 declare const entityKind: unique symbol;

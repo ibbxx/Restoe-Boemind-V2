@@ -85,8 +85,13 @@ export function operationalGraph(snapshot: WorkbookSnapshot, configuration: Engi
   const mueId = w ? w.bindings.find(b => b.profile === "INU" && b.key === "mue")?.cellId : legacyCell("Profit MUE");
   const supplierId = w ? w.bindings.find(b => b.profile === "INU" && b.key === "supplier")?.cellId : legacyCell("Harga INU · Harga Dasar");
   if (!costId || !mueId) return { graph };
+  if (configuration.decimal.scale < 2) throw new TypeError("Presisi engine INU minimal dua desimal untuk Biaya kelipatan 0,01.");
+  if (w?.solver && Object.values(w.solver).some(value => (value.split(".")[1]?.replace(/0+$/, "").length ?? 0) > 2)) {
+    throw new TypeError("Batas dan langkah solver INU wajib kelipatan 0,01; sesuaikan konfigurasi solver.");
+  }
   const costNode = graph.nodes.get(costId)!, target = graph.nodes.get(mueId)!;
   const decimal = new DecimalArithmetic(configuration.decimal), aggregates = new Map(configuration.aggregates.map(a => [a.id as string, a.memberCellIds]));
+  const costStep = decimal.parse("0.01");
   const ancestors = new Set<string>();
   function collect(id: string) { if (ancestors.has(id)) return; ancestors.add(id); graph.nodes.get(id)?.dependencies.forEach(collect); }
   collect(mueId);
@@ -138,14 +143,14 @@ export function operationalGraph(snapshot: WorkbookSnapshot, configuration: Engi
     const atZero = evaluate(0n);
     if (atZero === null) result = { ...result, status: "INCOMPLETE" };
     else {
-      let minimum = atZero < lower ? 0n : -1n, maximum = atZero < lower ? 1n : 0n;
+      let minimum = atZero < lower ? 0n : -costStep, maximum = atZero < lower ? costStep : 0n;
       result = { ...result, status: "SEARCH_LIMIT" };
       // Expand a numeric bracket instead of inventing business minimum/maximum prices.
       for (let attempt = 0; attempt < 512; attempt++) {
         const profit = evaluate(atZero < lower ? maximum : minimum);
         if (profit === null) { result = { ...result, status: "INCOMPLETE" }; break; }
         if (atZero < lower ? profit >= lower : profit < lower) {
-          limits = { minimum, maximum, step: 1n }; break;
+          limits = { minimum, maximum, step: costStep }; break;
         }
         if (atZero < lower) maximum *= 2n; else minimum *= 2n;
       }

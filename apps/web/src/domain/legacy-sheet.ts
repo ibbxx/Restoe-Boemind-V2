@@ -8,6 +8,7 @@ import { parseFormula, references } from "../engine/parser.ts";
 import { PROFILES } from "./profiles.ts";
 import type { EngineConfiguration } from "../engine/contracts.ts";
 import { DecimalArithmetic } from "../engine/decimal.ts";
+import { OPERATIONAL_DECIMAL_POLICY, OPERATIONAL_POLICY_VERSION_ID } from "./calculation-policy.ts";
 
 let referenceTemplate: WorkbookSnapshot | undefined;
 
@@ -15,8 +16,8 @@ export function legacyConfiguration(s: WorkbookSnapshot, config: EngineConfigura
   const cells = s.worksheets.flatMap(w => w.tables.flatMap(t => t.cells.map(c => ({ cell: c, label: t.rows.find(r => r.id === c.rowId)?.label ?? "" }))));
   const ids = new Set(cells.map(c => c.cell.id));
   const present = new Map(config?.units.map(u => [u.cellId, u]));
-  return { version: config?.version ?? "legacy-sheet-v1", policyVersionId: config?.policyVersionId ?? (s.policy.status === "CONFIGURED" ? s.policy.versionId : id<"policy">()),
-    decimal: config?.decimal ?? { scale: 5, rounding: "HALF_UP", roundAt: "EVERY_OPERATION" },
+  return { version: config?.version ?? "legacy-sheet-precision18-v1", policyVersionId: config?.policyVersionId ?? OPERATIONAL_POLICY_VERSION_ID,
+    decimal: config?.decimal ?? OPERATIONAL_DECIMAL_POLICY,
     units: cells.map(({ cell, label }) => {
       if (label.startsWith("@EV!") && (label.endsWith("|caption") || label.endsWith(":Nama vendor") || label.endsWith(":Notes"))) {
         return { cellId: cell.id, symbol: "1", dimensions: {} };
@@ -70,35 +71,49 @@ export function prepareLegacySheet(s: WorkbookSnapshot): WorkbookSnapshot {
     (latest, r) => !latest || r.revisionNumber > latest.revisionNumber ? r : latest, undefined);
   const extraLabels = [...new Set(s.analysis.offers.flatMap(offer => latestRevision(offer.id)?.values.map(v => v.label) ?? []))]
     .filter(label => !label.startsWith("formula:") && ![...vendorComponentLabels, "Nama vendor", "Notes"].some(known => known.toLocaleLowerCase("id-ID") === label.toLocaleLowerCase("id-ID")));
-  const captions: readonly (readonly [string, string])[] = [["B3", "EVALUASI HARGA VENDOR"], ["B4", ""], ["B5", "Pekerjaan / Material :"], ["B6", "Customer :"], ["B7", "Lokasi :"], ["B8", ""], ["B9", "Uraian"], ["B18", "Note :"],
-    ...vendorComponentLabels.map((label, index) => [`B${index + 10}`, label] as const), ...extraLabels.map((label, index) => [`B${index + 19}`, label] as const)];
+  const extraRowNumbers = new Map(extraLabels.map((label, index) => {
+    const existing = s.analysis.offers.map(offer => legacyVendorCell(s, offer.id, label)).find(Boolean);
+    const rowLabel = s.worksheets.flatMap(w => w.tables).find(t => t.id === existing?.tableId)?.rows.find(row => row.id === existing?.rowId)?.label;
+    return [label, Number(rowLabel?.split("|")[0]?.match(/\d+$/)?.[0]) || index + 19];
+  }));
+  const captions: readonly (readonly [string, string])[] = [["B3", "EVALUASI VENDOR"], ["B4", ""], ["B5", "Pekerjaan / Material :"], ["B6", "Customer :"], ["B7", "Lokasi :"], ["B8", ""], ["B9", "Uraian"], ["B18", "Note :"],
+    ...vendorComponentLabels.map((label, index) => [`B${index + 10}`, label] as const), ...extraLabels.map(label => [`B${extraRowNumbers.get(label)}`, label] as const)];
   for (const [address, text] of captions) {
     if (!s.worksheets.some(w => w.stage === "EVALUASI_VENDOR" && w.tables.some(t => t.rows.some(r => r.label.startsWith(`@EV!${address}|`))))) {
       add("EVALUASI_VENDOR", "SHARED", `@EV!${address}|caption`, text ? { kind: "TEXT", text } : { kind: "UNSET" });
     }
   }
+  const usedVendorColumns = new Set(s.worksheets.filter(w => w.stage === "EVALUASI_VENDOR").flatMap(w => w.tables.flatMap(t => t.rows
+    .filter(row => row.label.includes("|vendor:")).map(row => /^@EV!([A-Z]+)/.exec(row.label)?.[1]).filter((column): column is string => !!column))));
   s.analysis.offers.forEach((offer, index) => {
+    const existingLabel = s.worksheets.flatMap(w => w.tables.flatMap(t => t.rows)).find(row => row.label.includes(`|vendor:${offer.id}:`))?.label;
+    let nextColumnIndex = index;
+    let column = /^@EV!([A-Z]+)/.exec(existingLabel ?? "")?.[1];
+    if (!column) {
+      while (usedVendorColumns.has(vendorColumn(nextColumnIndex))) nextColumnIndex++;
+      column = vendorColumn(nextColumnIndex); usedVendorColumns.add(column);
+    }
     const revision = s.analysis.offerRevisions.filter(r => r.offerId === offer.id).reduce<(typeof s.analysis.offerRevisions)[number] | undefined>(
       (latest, r) => !latest || r.revisionNumber > latest.revisionNumber ? r : latest, undefined);
     const cells = new Map<string, CellSnapshot>();
     const pattern = (["C", "D", "E"] as const)[Math.min(index, 2)]!;
     for (const [label, row] of [["Nama vendor", 9], ["Notes", 18]] as const) {
-      if (!legacyVendorCell(s, offer.id, label)) add("EVALUASI_VENDOR", "SHARED", `@EV!${vendorColumn(index)}${row}|vendor:${offer.id}:${label}`,
+      if (!legacyVendorCell(s, offer.id, label)) add("EVALUASI_VENDOR", "SHARED", `@EV!${column}${row}|vendor:${offer.id}:${label}`,
         label === "Nama vendor" ? { kind: "TEXT", text: s.analysis.vendors.find(v => v.id === offer.vendorId)!.name } : { kind: "UNSET" });
     }
     [...vendorComponentLabels, ...extraLabels].forEach((label, position) => {
-      const row = position < vendorComponentLabels.length ? position + 10 : position - vendorComponentLabels.length + 19;
+      const row = position < vendorComponentLabels.length ? position + 10 : extraRowNumbers.get(label)!;
       const existing = legacyVendorCell(s, offer.id, label);
       if (existing) { cells.set(String(row), existing); return; }
       const value = revision?.values.find(v => v.label.toLocaleLowerCase("id-ID") === label.toLocaleLowerCase("id-ID"))?.input;
-      const cell = add("EVALUASI_VENDOR", "SHARED", `@EV!${vendorColumn(index)}${row}|vendor:${offer.id}:${label}`, value ?? { kind: "UNSET" });
+      const cell = add("EVALUASI_VENDOR", "SHARED", `@EV!${column}${row}|vendor:${offer.id}:${label}`, value ?? { kind: "UNSET" });
       cells.set(String(row), cell);
       const source = row <= 17 ? SOURCE_SHEETS[0]!.cells[pattern + row] : undefined;
       const custom = revision?.values.find(v => v.label === `formula:${label}`)?.input;
       if (custom?.kind === "TEXT") {
         pending.push({ cell, expression: custom.text.replace(/EV!([A-Z]+\d+)/gi, "$1"), resolve: address => {
           const found = cells.get(address.replace(/^[A-Z]+/, ""));
-          if (!found || !address.startsWith(vendorColumn(index))) throw new Error("Referensi rumus vendor lama tidak ditemukan.");
+          if (!found || !address.startsWith(column)) throw new Error("Referensi rumus vendor lama tidak ditemukan.");
           return found.id;
         } });
       } else if (label !== "PPH" && label !== "Harga Dasar" && source?.formula && (!value || value.kind === "UNSET")) {
@@ -238,7 +253,7 @@ export function makeAhsSaleInput(s: WorkbookSnapshot): WorkbookSnapshot {
     c.scope === profile && (s.workbook
       ? s.workbook.cells.some(p => p.cellId === c.id && p.address === sourceAddress(address, profile))
       : t.rows.some(r => r.id === c.rowId && r.label === label)))).at(0);
-  const decimal = new DecimalArithmetic(s.workbook?.configuration?.decimal ?? { scale: 5, rounding: "HALF_UP", roundAt: "EVERY_OPERATION" });
+  const decimal = new DecimalArithmetic(s.workbook?.configuration?.decimal ?? OPERATIONAL_DECIMAL_POLICY);
   const pending: { profile: typeof PROFILES[number]; gross: CellSnapshot; sale: CellSnapshot; input: CellInput;
     formula: FormulaDefinition | null; oldFormulaId: string | null }[] = [];
   for (const profile of PROFILES) {

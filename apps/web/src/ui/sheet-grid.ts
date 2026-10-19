@@ -1,13 +1,24 @@
 import type { CellSnapshot, TableSnapshot } from "../domain/contracts.ts";
 import { requireCondition } from "../domain/validation.ts";
+import { DecimalArithmetic } from "../engine/decimal.ts";
 
-// Display formatting only: grouping the original decimal string never rounds or converts money through Number.
+// Display rounding never changes the stored value or converts money through Number.
 export function sheetNumber(text: string, decimals = 2): string {
   if (/^[+-]?(?:0+(?:\.0*)?|\.0+)$/.test(text)) return "";
   const match = /^([+-]?)(\d+)(?:\.(\d*))?$/.exec(text);
   if (!match) return text;
-  const fraction = (match[3] ?? "").slice(0, decimals);
-  return match[1] + match[2]!.replace(/\B(?=(\d{3})+(?!\d))/g, ".") + (fraction ? "," + fraction : "");
+  const decimal = new DecimalArithmetic({ scale: decimals, rounding: "HALF_UP", roundAt: "EVERY_OPERATION" });
+  let rounded: bigint;
+  try { rounded = decimal.parse(text); }
+  catch (error) {
+    // Raw inputs can render before the engine reports invalid numbers or numeric limits.
+    if (error instanceof RangeError || error instanceof TypeError) return text;
+    throw error;
+  }
+  if (rounded === 0n) return "";
+  const [whole, fraction = ""] = decimal.format(rounded).split(".");
+  const shownFraction = fraction.padEnd(Math.min((match[3] ?? "").length, decimals), "0");
+  return whole!.replace(/\B(?=(\d{3})+(?!\d))/g, ".") + (shownFraction ? "," + shownFraction : "");
 }
 
 export function sheetNumberFixed(text: string, decimals = 2): string {
@@ -21,12 +32,11 @@ export function sheetNumberFixed(text: string, decimals = 2): string {
 export function sheetPercent(text: string): string {
   const match = /^([+-]?)((?:\d+))(?:\.(\d*))?$/.exec(text);
   if (!match) return text;
-  let digits = match[2]! + (match[3] ?? "");
-  let point = match[2]!.length + 2;
-  if (/^0+$/.test(digits)) return "";
-  while (digits.length > 1 && digits.startsWith("0")) { digits = digits.slice(1); point--; }
-  const shifted = point >= digits.length ? digits + "0".repeat(point - digits.length) : digits.slice(0, point) + "." + digits.slice(point);
-  return match[1] + sheetNumber(shifted, 2) + "%";
+  const fraction = match[3] ?? "";
+  const whole = (match[2]! + fraction.padEnd(2, "0").slice(0, 2)).replace(/^0+(?=\d)/, "");
+  const remainder = fraction.slice(2);
+  const shown = sheetNumberFixed(match[1] + whole + (remainder ? "." + remainder : ""));
+  return shown ? shown + "%" : "";
 }
 
 // Presentation-only grid: it never changes values, membership or identity.
