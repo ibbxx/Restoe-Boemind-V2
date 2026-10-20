@@ -10,7 +10,9 @@ import { createProcurementWorkbook } from "../src/domain/procurement-template.ts
 import { emptyWorkbook, changeWorkbook } from "../src/domain/workflow.ts";
 import { prepareVendorColumns, selectSheetOffer, changeSheetProfile } from "../src/domain/dynamic-workflow.ts";
 import { prepareLegacySheet, legacyConfiguration, connectAhsHpp, makeAhsSaleInput } from "../src/domain/legacy-sheet.ts";
-import { connectAhsVolumes } from "../src/domain/ahs-volume.ts";
+import { ahsVolumeSource, connectAhsVolumes } from "../src/domain/ahs-volume.ts";
+import { addAhsItem, ahsGroups, ahsCell, ahsRoleCell, prepareAhsRollups } from "../src/domain/ahs-groups.ts";
+import { addAhsField, ahsFields } from "../src/domain/ahs-fields.ts";
 import { currentSnapshot } from "../src/domain/current-workbook.ts";
 import { createStableId as id } from "../src/domain/ids.ts";
 import { canonicalJson } from "../src/domain/snapshots.ts";
@@ -221,6 +223,68 @@ test("current-only migration, repeated Save, isolation and AHS round trips", asy
         };
         assert.equal(result(profile === "INU" ? "I13" : "I12"), profile === "INU" ? "2566.6666663" : "2200");
         assert.equal(result(profile === "INU" ? "K13" : "K12"), profile === "INU" ? "12833333331.5" : "220000");
+      }
+    });
+    await t.test("custom AHS groups survive repeated Save and reload in both workbook layouts", async () => {
+      for (const seed of [dynamic, legacy]) {
+        let saved = await repo.current(seed.analysisId); assert(saved?.configuration);
+        let s = changeSheetProfile(connectAhsVolumes(saved.snapshot), "SOLAR_BAWAH");
+        s = numericCell(s, ahsVolumeSource(s, "SOLAR_BAWAH")!.id, "100");
+        s = addAhsItem(s, null, "Administrasi", "Biaya tambahan");
+        const group = ahsGroups(s).at(-1)!, item = group.items[0]!;
+        for (const amount of [30, 31, 32]) {
+          s = currentSnapshot(numericCell(s, item.priceCellId, String(amount)));
+          const configuration = s.workbook?.configuration ?? legacyConfiguration(s, saved.configuration);
+          const outcome = await repo.save({ snapshot: s, configuration, expectedVersion: saved.version, mutationId: id<"mutation">() }, actor);
+          assert.equal(outcome.status, "SAVED");
+          saved = await repo.current(seed.analysisId); assert(saved?.configuration);
+          assert.deepEqual(saved.snapshot.ahsGroups, s.ahsGroups);
+          assert.deepEqual(ahsCell(saved.snapshot, item.priceCellId)!.source, ahsCell(s, item.priceCellId)!.source);
+          const hydrated = connectAhsVolumes(prepareLegacySheet(saved.snapshot));
+          assert.equal(canonicalJson(hydrated), canonicalJson(saved.snapshot));
+          const result = new FormulaEngine(saved.configuration).evaluate(hydrated).provisional!.results.find(r => r.cellId === item.totalCellId);
+          assert(result && "value" in result); assert.equal(Number(result.value), amount * 100);
+          s = saved.snapshot;
+        }
+        const [row] = await admin!`select count(*)::int as count from procurement.current_workbooks where analysis_id=${seed.analysisId}`;
+        assert.equal(row!.count, 1);
+      }
+    });
+    await t.test("all AHS sections persist through repeated Save without overwriting earlier groups", async () => {
+      for (const seed of [dynamic, legacy]) {
+        let saved = await repo.current(seed.analysisId); assert(saved?.configuration);
+        let s = changeSheetProfile(prepareAhsRollups(connectAhsVolumes(makeAhsSaleInput(connectAhsHpp(saved.snapshot)))), "SOLAR_BAWAH");
+        const costs = canonicalJson(ahsGroups(s));
+        const volume = ahsVolumeSource(s, s.activeProfile)!.id;
+        s = numericCell(s, volume, "1000");
+        s = addAhsItem(s, null, "Layanan tambahan", "Pendapatan lain", "PENDAPATAN");
+        const income = ahsGroups(s, s.activeProfile, "PENDAPATAN").at(-1)!.items[0]!;
+        s = addAhsField(s, "INFORMASI", "PIC", "TEXT");
+        const info = ahsFields(s, "INFORMASI")[0]!;
+        s = setCellFormula(s, info.valueCellId, '"Ibnu"');
+        s = addAhsField(s, "LABA", "Pembagian laba", "IDR");
+        const indicator = ahsFields(s, "LABA")[0]!;
+        const profit = ahsRoleCell(s, s.activeProfile, "L36", "LABA BERSIH")!.id;
+        s = setCellFormula(s, indicator.valueCellId, `@{${profit}}*0.1`);
+        for (const amount of [200, 201]) {
+          s = currentSnapshot(numericCell(s, income.priceCellId, String(amount)));
+          const configuration = s.workbook?.configuration ?? legacyConfiguration(s, saved.configuration);
+          const result = await repo.save({ snapshot: s, configuration, expectedVersion: saved.version, mutationId: id<"mutation">() }, actor);
+          assert.equal(result.status, "SAVED");
+          saved = await repo.current(seed.analysisId); assert(saved?.configuration);
+          assert.equal(canonicalJson(saved.snapshot), canonicalJson(s));
+          assert.equal(canonicalJson(ahsGroups(saved.snapshot)), costs);
+          const prepared = prepareAhsRollups(connectAhsVolumes(makeAhsSaleInput(connectAhsHpp(prepareLegacySheet(saved.snapshot)))));
+          assert.equal(canonicalJson(prepared), canonicalJson(saved.snapshot));
+          const run = new FormulaEngine(saved.configuration).evaluate(prepared);
+          const total = run.provisional!.results.find(r => r.cellId === income.totalCellId);
+          assert(total && "value" in total); assert.equal(Number(total.value), amount * 1000);
+          const name = run.results.find(r => r.cellId === info.valueCellId);
+          assert(name?.status === "TEXT"); assert.equal(name.text, "Ibnu");
+          s = saved.snapshot;
+        }
+        const [row] = await admin!`select count(*)::int as count from procurement.current_workbooks where analysis_id=${seed.analysisId}`;
+        assert.equal(row!.count, 1);
       }
     });
     await t.test("canonical stored values occur only in offers; dangling references are rejected", async () => {

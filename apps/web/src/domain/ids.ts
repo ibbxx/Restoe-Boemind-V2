@@ -2,7 +2,7 @@ export type EntityKind =
   | "project" | "vendor" | "offer" | "offer" | "offer-value"
   | "worksheet" | "table" | "row" | "column" | "cell" | "merge" | "formula" | "snapshot"
   | "policy" | "version" | "run" | "user" | "mutation"
-  | "analysis" | "mapping" | "aggregate" | "aggregate-version";
+  | "analysis" | "mapping" | "aggregate" | "aggregate-version" | "ahs-group";
 
 declare const entityKind: unique symbol;
 export type StableId<Kind extends EntityKind> = string & {

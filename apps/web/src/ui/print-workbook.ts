@@ -2,7 +2,7 @@ function copyTable(source: HTMLTableElement, kind: string): HTMLTableElement {
   const table = source.cloneNode(true) as HTMLTableElement;
   table.className = `print-table print-${kind}`;
   table.removeAttribute("style");
-  table.querySelectorAll(".vendor-table-actions").forEach(element => element.remove());
+  table.querySelectorAll(".vendor-table-actions, dialog").forEach(element => element.remove());
   table.querySelectorAll("input, select").forEach(element => element.remove());
   table.querySelectorAll("button").forEach(button => button.replaceWith(document.createTextNode(button.textContent ?? "")));
   table.querySelectorAll("[style], [tabindex], [title], [data-cell-id], [data-cell-code]").forEach(element => {

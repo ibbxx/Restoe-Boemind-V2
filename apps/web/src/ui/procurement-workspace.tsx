@@ -21,6 +21,7 @@ import { prepareVendorColumns, prepareSelectedVendorMappings, selectSheetOffer }
 import { refreshCurrentOffers } from "../domain/current-offers.ts";
 import { connectAhsVolumes } from "../domain/ahs-volume.ts";
 import { prepareCalculationPolicy } from "../domain/calculation-policy.ts";
+import { prepareAhsRollups } from "../domain/ahs-groups.ts";
 
 type ProjectListItem = { id: string; name: string };
 type AnalysisListItem = { id: string; name: string; project_id: string };
@@ -52,7 +53,7 @@ export function ProcurementWorkspace() {
 
   const prepareVolumes = useCallback((s: WorkbookSnapshot) => {
     let issue = "";
-    try { s = connectAhsVolumes(s); }
+    try { s = prepareAhsRollups(connectAhsVolumes(s)); }
     catch (cause) { issue = cause instanceof Error ? cause.message : "Volume AHS gagal diselaraskan."; }
     volumeErrorRef.current = issue; setVolumeError(issue);
     return s;
@@ -284,13 +285,22 @@ export function ProcurementWorkspace() {
             savedVersion.current = null; setNewWorkbookProjectId(null);
             window.history.replaceState(null, "", "/");
           });
-        }}><h3>{newWorkbookProjectId ? "Tambah Analysis" : "Proyek baru"}</h3>
-          {newWorkbookProjectId ? <p>Proyek: {projects.find(p => p.id === newWorkbookProjectId)?.name}</p>
-            : <label>Nama proyek<input name="projectName" required /></label>}
-          <label>Nama Analysis<input name="analysisName" required /></label>
-          <div className="project-create-actions"><button type="submit" value="template">Buat dari template</button>
-            <button type="submit" value="empty">Buat workbook kosong</button>
-            <button type="button" onClick={() => setNewWorkbookProjectId(null)}>Batal</button></div>
+        }}>
+          <div className="project-create-heading">
+            <div><p className="form-eyebrow">RUANG KERJA BARU</p><h3>{newWorkbookProjectId ? "Tambah Analysis" : "Proyek baru"}</h3></div>
+            <button type="button" className="project-create-close" aria-label="Tutup form" onClick={() => setNewWorkbookProjectId(null)}>×</button>
+          </div>
+          <p className="project-create-intro">Siapkan lembar evaluasi untuk mulai memasukkan data vendor.</p>
+          <div className="project-create-fields">
+            {newWorkbookProjectId ? <div className="form-project-context"><span>Proyek</span><strong>{projects.find(p => p.id === newWorkbookProjectId)?.name}</strong></div>
+              : <label><span>Nama proyek</span><input name="projectName" placeholder="Contoh: Pembangunan Gedung A" required /></label>}
+            <label><span>Nama Analysis</span><input name="analysisName" placeholder="Contoh: Evaluasi penawaran tahap 1" required /></label>
+          </div>
+          <div className="project-create-actions">
+            <button type="submit" className="project-create-primary" value="template"><span>Buat dari template</span><small>Struktur evaluasi siap digunakan</small></button>
+            <button type="submit" className="project-create-secondary" value="empty">Workbook kosong</button>
+            <button type="button" className="project-create-cancel" onClick={() => setNewWorkbookProjectId(null)}>Batal</button>
+          </div>
         </form>}
         {projects.length ? <ol className="project-list">
           {projects.map((project, index) => {

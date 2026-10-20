@@ -108,6 +108,8 @@ export type CalculationPolicyRef =
   | { readonly status: "CONFIGURED"; readonly versionId: StableId<"policy"> };
 
 export interface WorkbookSnapshot {
+  readonly ahsGroups?: readonly AhsGroup[];
+  readonly ahsFields?: readonly AhsField[];
   readonly schemaVersion: 2 | 3;
   readonly workbook?: DynamicWorkbook;
   readonly id: StableId<"snapshot">;
@@ -122,6 +124,37 @@ export interface WorkbookSnapshot {
   readonly worksheets: readonly WorksheetSnapshot[];
   readonly formulas: readonly FormulaDefinition[];
   readonly policy: CalculationPolicyRef;
+}
+
+export interface AhsItem {
+  readonly name: string;
+  readonly builtin: boolean;
+  readonly labelCellId: StableId<"cell"> | null;
+  readonly priceCellId: StableId<"cell">;
+  readonly volumeCellId: StableId<"cell">;
+  readonly totalCellId: StableId<"cell">;
+}
+
+export interface AhsGroup {
+  readonly section?: AhsGroupSection;
+  readonly id: StableId<"ahs-group">;
+  readonly profile: Profile;
+  readonly name: string;
+  readonly builtin: boolean;
+  readonly labelCellId: StableId<"cell"> | null;
+  readonly items: readonly AhsItem[];
+}
+
+export type AhsGroupSection = "PENDAPATAN" | "BIAYA";
+export type AhsSection = "INFORMASI" | AhsGroupSection | "LABA";
+export type AhsValueType = "TEXT" | "NUMBER" | "IDR" | "IDR/L" | "PERCENT";
+export interface AhsField {
+  readonly section: "INFORMASI" | "LABA";
+  readonly profile: Profile;
+  readonly name: string;
+  readonly labelCellId: StableId<"cell">;
+  readonly valueCellId: StableId<"cell">;
+  readonly valueType: AhsValueType;
 }
 
 export interface Project {

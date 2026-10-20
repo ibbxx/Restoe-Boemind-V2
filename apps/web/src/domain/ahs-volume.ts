@@ -9,6 +9,7 @@ import { displayCellId } from "./cell-address.ts";
 export function isAhsVolumeCell(snapshot: WorkbookSnapshot, cell: CellSnapshot): boolean {
   const table = snapshot.worksheets.find(worksheet => worksheet.stage === "AHS")?.tables.find(table => table.id === cell.tableId);
   if (!table) return false;
+  if (snapshot.ahsGroups?.some(group => group.items.some(item => item.volumeCellId === cell.id))) return true;
   return snapshot.workbook
     ? snapshot.workbook.cells.some(meta => meta.cellId === cell.id && meta.unit === "L")
     : table.rows.some(row => row.id === cell.rowId && (row.label.endsWith(" · Volume") || row.label.endsWith("|template:L")));

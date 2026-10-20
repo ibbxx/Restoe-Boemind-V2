@@ -2,7 +2,7 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, FormEvent, MouseEvent, PointerEvent, ReactNode } from "react";
-import type { CellSnapshot, TableSnapshot, WorkbookSnapshot, WorksheetSnapshot } from "../domain/contracts.ts";
+import type { AhsSection, CellSnapshot, TableSnapshot, WorkbookSnapshot, WorksheetSnapshot } from "../domain/contracts.ts";
 import type { Profile } from "../domain/profiles.ts";
 import type { StableId } from "../domain/ids.ts";
 import { createStableId as id, parseStableId } from "../domain/ids.ts";
@@ -21,6 +21,10 @@ import { isAhsVolumeCell, isAhsVolumeFollower } from "../domain/ahs-volume.ts";
 import { WorksheetCellInput } from "./worksheet-cell-input.tsx";
 import { printWorkbook } from "./print-workbook.ts";
 import { addVendorComponent, includeNewVendorComponentTotals, removableVendorComponents, removeVendorComponent, vendorComponents, vendorComponentRoles } from "../domain/vendor-components.ts";
+import { ahsCell, ahsGroups, ahsLabel, ahsSectionOfCell, removeAhsEntry } from "../domain/ahs-groups.ts";
+import { ahsFields, removeAhsField } from "../domain/ahs-fields.ts";
+import { AhsActions } from "./ahs-actions.tsx";
+import { MenuToggleIcon } from "../components/ui/menu-toggle-icon.tsx";
 
 type Stage = WorksheetSnapshot["stage"];
 
@@ -41,16 +45,6 @@ interface SurfaceProps {
   onSelectOffer?: (selectionId: string) => void;
 }
 
-const costGroups = [
-  { label: "HPP", rows: ["Harga Dasar", "OAT", "PBBKB", "PPH INU 0,3%", "BPH Migas 0,25%"] },
-  { label: "PAJAK", rows: ["PPN 11%", "PPH penjualan"] },
-  { label: "COST OF FUND", rows: ["Investor", "Bunga Bank", "Diskonto SKBDN"] },
-  { label: "OPERASIONAL", rows: ["Biaya Operasional", "Bonus Marketing"] },
-  { label: "ASET", rows: ["Tangki Solar"] },
-  { label: "KOORDINASI", rows: ["Ormas/Lainnya"] },
-  { label: "RELASI", rows: ["Biaya Proyek", "Biaya Mediator"] },
-  { label: "RESIKO", rows: ["Biaya Resiko", "Kenaikan Harga"] },
-];
 const summaryRows = ["LABA KOTOR", "SELISIH PPN", "LABA BERSIH", "LABA BERSIH PER LITER", "PERSENTASE"];
 const normalized = (text: string) => text.trim().toLocaleLowerCase("id-ID");
 const numericText = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
@@ -71,10 +65,12 @@ export function WorksheetSurface(props: SurfaceProps) {
   const addComponentDialogRef = useRef<HTMLDialogElement | null>(null);
   const [newComponentName, setNewComponentName] = useState("");
   const vendorMenuRef = useRef<HTMLDetailsElement | null>(null);
+  const [vendorMenuOpen, setVendorMenuOpen] = useState(false);
   const removeComponentDialogRef = useRef<HTMLDialogElement | null>(null);
   const [componentToRemove, setComponentToRemove] = useState("");
   const formulaInputRef = useRef<HTMLInputElement | null>(null);
   const formulaCellInputRef = useRef<HTMLInputElement | null>(null);
+  const ahsAddButtonsRef = useRef<Partial<Record<AhsSection, HTMLButtonElement | null>>>({});
 
   const isINU = snapshot?.activeProfile === "INU";
   useEffect(() => {
@@ -265,7 +261,8 @@ export function WorksheetSurface(props: SurfaceProps) {
     const vendorAddress = isVendorCell ? addressOf(target.id) : "";
     const vendorText = isVendorCell && (/^B\d+$/.test(vendorAddress) || Number(vendorAddress.match(/\d+$/)?.[0]) <= 9 || /18$/.test(vendorAddress));
     const isVendorComponent = isVendorCell && snapshot.analysis.offers.some(offer => vendorComponents(snapshot, offer.id).some(component => component.source.id === target.id));
-    const isTextCell = !isVolume && (vendorName || vendorText || (!isVendorComponent && (presentations.get(target.id)?.unit === "text" || (!snapshot.workbook && target.source.kind === "INPUT" && target.source.input.kind === "TEXT"))));
+    const textField = snapshot.ahsFields?.some(field => field.valueCellId === target.id && field.valueType === "TEXT");
+    const isTextCell = !isVolume && (textField || vendorName || vendorText || (!isVendorComponent && (presentations.get(target.id)?.unit === "text" || (!snapshot.workbook && target.source.kind === "INPUT" && target.source.input.kind === "TEXT"))));
     const isNumber = !isTextCell && numericText.test(numeric);
     const saved = apply(() => {
       if (isFormula) return setCellFormula(snapshot, target.id, resolveFormula(raw.slice(1), snapshot, target.id));
@@ -279,12 +276,12 @@ export function WorksheetSurface(props: SurfaceProps) {
     return saved;
   }
 
-  function worksheetCellEditor(cell: CellSnapshot, label: string) {
+  function worksheetCellEditor(cell: CellSnapshot, label: string, format: "number" | "percentage" = "number") {
     if (snapshot && isAhsVolumeFollower(snapshot, cell)) return <button type="button" className="cell-readout sheet-result" disabled={disabled}
       aria-label={label} title="Mengikuti Volume Harga Jual · Harga Dasar" onClick={() => handleSelectCell(cell.id)}>{cellValue(cell)}</button>;
     const raw = cell.source.kind === "FORMULA" ? "=" + storedExpression(cell.id)
       : cell.source.kind === "INPUT" && cell.source.input.kind !== "UNSET" ? cell.source.input.text : "";
-    return <WorksheetCellInput key={cell.id + ":" + raw} label={label} raw={raw} shown={cellValue(cell)} selected={selectedCellId === cell.id}
+    return <WorksheetCellInput key={cell.id + ":" + raw} label={label} raw={raw} shown={cellValue(cell, format)} selected={selectedCellId === cell.id}
       needsCommit={!!snapshot && isAhsVolumeCell(snapshot, cell) && cell.source.kind === "INPUT" && cell.source.input.kind === "TEXT"}
       editing={isEditingFormula} expression={formulaExpression} disabled={disabled} onFocusInput={input => { formulaCellInputRef.current = input; }}
       onSelect={() => handleSelectCell(cell.id)} onDraft={value => { setFormulaExpression(value); setIsEditingFormula(value.trimStart().startsWith("=")); onEditing?.(); }}
@@ -335,6 +332,11 @@ export function WorksheetSurface(props: SurfaceProps) {
   function handleAddRow() {
     if (!selectedTable || !snapshot) return;
     if (snapshot.worksheets.some(w => w.stage === "EVALUASI_VENDOR" && w.tables.some(t => t.id === selectedTable.id))) { openAddComponentDialog(); return; }
+    if (snapshot.worksheets.some(w => w.stage === "AHS" && w.tables.some(t => t.id === selectedTable.id))) {
+      const addAction = ahsAddButtonsRef.current["INFORMASI"];
+      addAction?.closest("details")?.querySelector<HTMLElement>("summary")?.click();
+      return;
+    }
     const label = `Baris ${selectedTable.rowOrder.length + 1}`;
     apply(() => addRow(snapshot, selectedTable.id, { label, scope: snapshot.activeProfile }));
   }
@@ -347,6 +349,21 @@ export function WorksheetSurface(props: SurfaceProps) {
 
   function handleRemoveRow() {
     if (!selectedTable || !selectedCell || !snapshot) return;
+    if (snapshot.worksheets.some(w => w.stage === "AHS" && w.tables.some(t => t.id === selectedTable.id))) {
+      const section = ahsSectionOfCell(snapshot, selectedCell);
+      const field = snapshot.ahsFields?.find(f => f.profile === snapshot.activeProfile && ahsCell(snapshot, f.valueCellId)?.rowId === selectedCell.rowId);
+      if (field && configuration) {
+        if (window.confirm(`Hapus uraian “${ahsLabel(snapshot, field)}” beserta nilainya?`)) apply(() => removeAhsField(snapshot, field.valueCellId, configuration));
+        return;
+      }
+      const group = (section === "PENDAPATAN" || section === "BIAYA" ? ahsGroups(snapshot, snapshot.activeProfile, section) : []).find(g => g.items.some(item => ahsCell(snapshot, item.priceCellId)?.rowId === selectedCell.rowId ||
+        [item.priceCellId, item.volumeCellId, item.totalCellId].includes(selectedCell.id)));
+      const item = group?.items.find(item => ahsCell(snapshot, item.priceCellId)?.rowId === selectedCell.rowId ||
+        [item.priceCellId, item.volumeCellId, item.totalCellId].includes(selectedCell.id));
+      if (!group || !item || !configuration) { setToolbarError("Baris inti AHS tidak dapat dihapus."); return; }
+      if (window.confirm(`Hapus uraian “${ahsLabel(snapshot, item)}” beserta nilainya?`)) apply(() => removeAhsEntry(snapshot, group.id, item.priceCellId, configuration, section === "PENDAPATAN" ? section : "BIAYA"));
+      return;
+    }
     apply(() => removeRow(snapshot, selectedTable.id, selectedCell.rowId));
   }
 
@@ -480,12 +497,27 @@ export function WorksheetSurface(props: SurfaceProps) {
     ? `${selectedResult.status}: ${selectedResult.code}${selectedResult.path.length ? ` · ${selectedResult.path.map(id => codes.get(id) ?? id).join(" → ")}` : ""}` : "";
 
   if (!snapshot) return null;
+  const currentAhsGroups = ahsGroups(snapshot), incomeAhsGroups = ahsGroups(snapshot, snapshot.activeProfile, "PENDAPATAN");
+  const addedAhsItems = [...currentAhsGroups, ...incomeAhsGroups].flatMap(g => g.items.filter(item => !item.builtin));
+  const extraFields = (snapshot.ahsFields ?? []).filter(f => f.profile === snapshot.activeProfile);
+  const fieldRows = new Map(extraFields.map(f => [ahsCell(snapshot, f.valueCellId)!.rowId, f]));
+  const incomeRows = new Set(incomeAhsGroups.flatMap(g => g.items.filter(item => !item.builtin).map(item => ahsCell(snapshot, item.priceCellId)!.rowId)));
+  const addedAhsRows = new Set(addedAhsItems.map(item => ahsCell(snapshot, item.priceCellId)?.rowId));
+  const addedAhsCells = new Set([...addedAhsItems.flatMap(item => [item.priceCellId, item.volumeCellId, item.totalCellId, item.labelCellId]),
+    ...extraFields.flatMap(f => [f.labelCellId, f.valueCellId])]);
+  const ahsActionSections: readonly AhsSection[] = ["INFORMASI", "PENDAPATAN", "BIAYA", "LABA"];
+  const ahsActions = () => <AhsActions key={snapshot.analysisId + snapshot.activeProfile} section="INFORMASI" sections={ahsActionSections} snapshot={snapshot} configuration={configuration}
+    disabled={disabled} error={toolbarError} onApply={apply} addButtonRef={button => { ahsAddButtonsRef.current["INFORMASI"] = button; }} />;
+  const fieldRowsFor = (section: "INFORMASI" | "LABA") => ahsFields(snapshot, section).map(field => <tr key={field.valueCellId} className={section === "INFORMASI" ? "ahs-meta" : "profit-row"}>
+    <th colSpan={section === "INFORMASI" ? 3 : 5}>{worksheetCellEditor(ahsCell(snapshot, field.labelCellId)!, "Nama uraian AHS")}</th>
+    <td colSpan={section === "INFORMASI" ? 3 : 1}>{worksheetCellEditor(ahsCell(snapshot, field.valueCellId)!, ahsLabel(snapshot, field), field.valueType === "PERCENT" ? "percentage" : "number")}</td>
+  </tr>);
   const selectedVendorOfferId = snapshot.analysis.offers.find(activeOffer => activeOffer.id === snapshot.selectedOfferId)?.id;
   const selectedVendorComponents = selectedVendorOfferId ? vendorComponents(snapshot, selectedVendorOfferId) : [];
   const componentLabel = (component: (typeof selectedVendorComponents)[number]) => component.labelCell ? cellValue(component.labelCell) : component.role;
   const removableComponents = removableVendorComponents(snapshot);
-  const vendorActions = <details className="vendor-table-actions" ref={vendorMenuRef} onClick={event => event.stopPropagation()}
-    onToggle={event => { if (event.currentTarget.open) requestAnimationFrame(() => {
+  const vendorActions = <details className="vendor-table-actions vendor-menu-actions" ref={vendorMenuRef} onClick={event => event.stopPropagation()}
+    onToggle={event => { setVendorMenuOpen(event.currentTarget.open); if (event.currentTarget.open) requestAnimationFrame(() => {
       const menu = vendorMenuRef.current;
       if (menu?.open && document.activeElement === menu.querySelector("summary")) menu.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
     }); }}
@@ -500,7 +532,7 @@ export function WorksheetSurface(props: SurfaceProps) {
       buttons[index]?.focus();
     }}>
     <summary aria-label="Aksi Evaluasi Vendor" aria-haspopup="menu" title="Aksi Evaluasi Vendor">
-      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="12" cy="19" r="1.8" /></svg>
+      <MenuToggleIcon open={vendorMenuOpen} duration={500} aria-hidden="true" />
     </summary>
     <div role="menu" aria-label="Aksi Evaluasi Vendor">
       <button type="button" role="menuitem" disabled={disabled} onClick={() => menuAction(openAddComponentDialog)}>Tambah uraian</button>
@@ -626,7 +658,9 @@ export function WorksheetSurface(props: SurfaceProps) {
                   trClass = rowNum === 42 ? "conversion-profit mue-row" : "conversion-profit";
                 }
               } else if (stage === "AHS") {
-                if (rowNum === 3) trClass = "ahs-title";
+                if (fieldRows.has(rowId)) trClass = fieldRows.get(rowId)!.section === "INFORMASI" ? "ahs-meta" : "profit-row";
+                else if (addedAhsRows.has(rowId)) trClass = incomeRows.has(rowId) ? "income-row" : "cost-row";
+                else if (rowNum === 3) trClass = "ahs-title";
                 else if (rowNum >= 4 && rowNum <= 7) trClass = "ahs-meta";
                 else if (rowNum === 8) trClass = "ahs-meta ahs-include";
                 else if (rowNum >= 9 && rowNum <= 13) trClass = rowNum <= 10 ? "income-row income-total" : "income-row";
@@ -635,6 +669,7 @@ export function WorksheetSurface(props: SurfaceProps) {
                 else if (rowNum === 39) trClass = "ahs-notes";
               }
 
+              const lastCellIndex = row.findLastIndex(entry => !!entry?.cell);
               return (
                 <tr key={rowId} className={trClass || undefined} style={{ height: `${rowHeight}px` }}>
                   {row.map((entry, colIndex) => {
@@ -659,9 +694,9 @@ export function WorksheetSurface(props: SurfaceProps) {
                     const cellClasses: string[] = [];
                     if (stage === "EVALUASI_VENDOR" && selectedVendorColumnId && offers.some(offer => offer.columnId === colId) && colId !== selectedVendorColumnId) cellClasses.push("vendor-unselected");
                     if (isSelected) cellClasses.push("cell-selected");
-                    if (stage === "AHS" && colMeta?.label === "G" && ((rowNum >= 11 && rowNum <= 13) || (rowNum >= 16 && rowNum <= 33))) cellClasses.push("category");
+                    if (stage === "AHS" && colMeta?.label === "G" && ((rowNum >= 11 && rowNum <= 13) || (rowNum >= 16 && rowNum <= 33) || addedAhsRows.has(rowId))) cellClasses.push("category");
                     if (stage === "AHS" && colMeta?.label === "H") cellClasses.push("cost-description");
-                    if (stage === "AHS" && (colMeta?.label === "I" || colMeta?.label === "K") && rowNum >= 14 && rowNum <= 33) {
+                    if (stage === "AHS" && (colMeta?.label === "I" || colMeta?.label === "K") && ((rowNum >= 14 && rowNum <= 33) || addedAhsRows.has(rowId))) {
                       cellClasses.push("currency-cell");
                     }
                     if (meta?.unit === "text") cellClasses.push("cell-label");
@@ -698,8 +733,8 @@ export function WorksheetSurface(props: SurfaceProps) {
                     const sourceMapping = stage === "KONVERSI_JAGAD" && colIndex === 0 ? snapshot.mappings.find(mapping => mapping.sourceComponent.startsWith("vendor-live:") &&
                       table.cells.some(target => target.id === mapping.targetCellId && target.rowId === rowId)) : undefined;
                     const sourceComponent = selectedVendorComponents.find(component => component.source.id === sourceMapping?.sourceCellId);
-                    if (stage === "EVALUASI_VENDOR" || isAhsVolumeCell(snapshot, cell)) {
-                      displayContent = worksheetCellEditor(cell, stage === "EVALUASI_VENDOR" ? `Evaluasi Vendor · ${cellAddress}` : `Lembar AHS · Volume · ${cellAddress}`);
+                    if (stage === "EVALUASI_VENDOR" || isAhsVolumeCell(snapshot, cell) || (stage === "AHS" && addedAhsCells.has(cell.id))) {
+                      displayContent = worksheetCellEditor(cell, stage === "EVALUASI_VENDOR" ? `Evaluasi Vendor · ${cellAddress}` : `Lembar AHS · ${isAhsVolumeCell(snapshot, cell) ? "Volume · " : ""}${cellAddress}`, fieldRows.get(rowId)?.valueCellId === cell.id && fieldRows.get(rowId)?.valueType === "PERCENT" ? "percentage" : "number");
                     } else if (sourceComponent) {
                       displayContent = <span className="sheet-result">{componentLabel(sourceComponent)}</span>;
                     } else if (stage === "KONVERSI_JAGAD" && cell.id === binding(snapshot, snapshot.activeProfile, "supplierName")) {
@@ -788,9 +823,12 @@ export function WorksheetSurface(props: SurfaceProps) {
                         }}
                         onClick={event => { if (!(event.target instanceof HTMLInputElement)) handleSelectCell(cell.id); }}
                       >
-                        {colMeta?.label === "I" && stage === "AHS" && rowNum >= 14 && rowNum <= 33 && <span>Rp</span>}
+                        {colMeta?.label === "I" && stage === "AHS" && ((rowNum >= 14 && rowNum <= 33) || addedAhsRows.has(rowId)) && <span>Rp</span>}
                         {trClass === "vendor-title" && colIndex === row.findIndex(item => item?.cell) ?
-                          <div className="vendor-title-layout"><div className="vendor-title-content">{displayContent}</div>{vendorActions}</div> : displayContent}
+                          <div className="vendor-title-layout"><div className="vendor-title-content">{displayContent}</div>{vendorActions}</div>
+                          : stage === "AHS" && rowNum === 3 && colIndex === lastCellIndex
+                            ? <div className="vendor-title-layout"><div className="vendor-title-content">{displayContent}</div>{ahsActions()}</div>
+                            : displayContent}
                       </CellTag>
                     );
                   })}
@@ -886,7 +924,7 @@ export function WorksheetSurface(props: SurfaceProps) {
               <label className="profile-picker">Profil Konversi
                 <select aria-label="Profil Konversi" value={snapshot.activeProfile} disabled={disabled}
                   onChange={event => handleProfileChange(event.target.value as Profile)}>
-                  <option value="SOLAR_BAWAH">Solar</option><option value="INU">INU</option>
+                  <option value="SOLAR_BAWAH">SKP</option><option value="INU">INU</option>
                 </select>
               </label>
               {isINU && run?.solver && (
@@ -1013,8 +1051,10 @@ export function WorksheetSurface(props: SurfaceProps) {
     vendor: { ...snapshot.analysis.vendors.find(v => v.id === offer.vendorId)!, name: vendorDisplayName(offer.id) } })) ?? [];
   const legacyVendorColumns = Math.max(3, legacyOffers.length);
   const legacyComponentRows = legacyOffers[0] ? vendorComponents(snapshot, legacyOffers[0].offer.id).filter(component => component.role !== "TOTAL") : [];
-  const hpp = fields.find(f => f.cell.id === snapshot?.profiles[snapshot.activeProfile].hppBase.cellId)?.cell;
-  const header = (label: string, className: string) => <tr key={label} className={className}><th colSpan={5}>{label}</th><td>{legacySlot("AHS", label)}</td></tr>;
+  const header = (label: string, className: string) => <tr key={label} className={className}>
+    <th colSpan={5}>{label}</th>
+    <td>{legacySlot("AHS", label)}</td>
+  </tr>;
   const conversionColumns = ["Harga INU", "Biaya"];
   const conversionRows = selectedVendorComponents.length ? selectedVendorComponents.map(component => ({
     key: vendorComponentRoles.some(role => role === component.role) ? component.role === "TOTAL" ? "ALL IN" : component.role : `vendor-extra:${component.labelCell?.id ?? component.source.id}`,
@@ -1099,7 +1139,7 @@ export function WorksheetSurface(props: SurfaceProps) {
             <label className="profile-picker">Profil Konversi
               <select aria-label="Profil Konversi" value={snapshot?.activeProfile ?? "SOLAR_BAWAH"} disabled={disabled}
                 onChange={event => handleProfileChange(event.target.value as Profile)}>
-                <option value="SOLAR_BAWAH">Solar</option><option value="INU">INU</option>
+                <option value="SOLAR_BAWAH">SKP</option><option value="INU">INU</option>
               </select>
             </label>
           </div>
@@ -1135,38 +1175,44 @@ export function WorksheetSurface(props: SurfaceProps) {
           </table>
         </div>
 
+        <div className="sheet-table-scroll">
         <table className="ahs-sheet" aria-label="Analisis Harga Satuan AHS">
           <colgroup>{Array.from({ length: 6 }, (_, i) => <col key={i} />)}</colgroup>
-          <thead><tr className="ahs-title"><th colSpan={6}>ANALISIS HARGA SATUAN (AHS)</th></tr></thead>
+          <thead><tr className="ahs-title"><th colSpan={6}><div className="vendor-title-layout"><div className="vendor-title-content">ANALISIS HARGA SATUAN (AHS)</div>{ahsActions()}</div></th></tr></thead>
           <tbody>
             {[["Tgl Analisis (Rn)", "Sumber"], ["Marketing", "Lokasi"], ["Pembayaran", "Dokumen"], ["Harga Keekonomian", "Diskon"]].map(pair => (
               <tr className="ahs-meta" key={pair[0]}>
                 {pair.map(label => <Fragment key={label}><th>{label}</th><td colSpan={2}>{legacySlot("AHS", label, "TEXT")}</td></Fragment>)}
               </tr>
             ))}
+            {fieldRowsFor("INFORMASI")}
             <tr className="ahs-meta ahs-include"><th colSpan={3}>HARGA INCLUDE</th><td colSpan={3}>{legacySlot("AHS", "Harga Include")}</td></tr>
             {header("TOTAL PENDAPATAN", "income-row")}{header("HARGA JUAL SETELAH PAJAK", "income-row")}
-            {["Harga Dasar", "PBBKB", "PPN 11%"].map((label, index) => (
-              <tr className="income-row" key={label}>
-                {index === 0 && <th rowSpan={3} className="category">HARGA JUAL</th>}
-                <td className="cost-description" title={label}>{label}</td>
-                <td>{legacySlot("AHS", `Harga Jual · ${label}`)}</td><td>{legacySlot("AHS", `Harga Jual · ${label} · Volume`)}</td><td>{legacySlot("AHS", `Harga Jual · ${label} · Total`)}</td><td />
+            {incomeAhsGroups.flatMap(group => group.items.map((item, index) => (
+              <tr className="income-row" key={item.priceCellId}>
+                {index === 0 && <th rowSpan={group.items.length} className="category">{ahsLabel(snapshot, group)}</th>}
+                <td className="cost-description">{ahsLabel(snapshot, item)}</td>
+                <td>{legacySlot("AHS", `${group.name} · ${item.name}`, "NUMERIC_TEXT", ahsCell(snapshot, item.priceCellId))}</td>
+                <td>{legacySlot("AHS", `${group.name} · ${item.name} · Volume`, "NUMERIC_TEXT", ahsCell(snapshot, item.volumeCellId))}</td>
+                <td colSpan={2}>{legacySlot("AHS", `${group.name} · ${item.name} · Total`, "NUMERIC_TEXT", ahsCell(snapshot, item.totalCellId))}</td>
               </tr>
-            ))}
+            )))}
             {header("TOTAL BIAYA", "cost-row")}{header("BIAYA PER LITER", "cost-row")}
-            {costGroups.flatMap(group => group.rows.map((label, index) => (
-              <tr className="cost-row" key={group.label + label}>
-                {index === 0 && <th rowSpan={group.rows.length} className="category">{group.label}</th>}
-                <td className="cost-description" title={label}>{label}</td>
-                <td className="currency-cell"><span>Rp</span>{legacySlot("AHS", `${group.label} · ${label}`, "NUMERIC_TEXT", group.label === "HPP" && index === 0 ? hpp : undefined)}</td>
-                <td>{legacySlot("AHS", `${group.label} · ${label} · Volume`)}</td>
-                <td colSpan={2} className="currency-cell"><span>Rp</span>{legacySlot("AHS", `${group.label} · ${label} · Total`)}</td>
+            {currentAhsGroups.flatMap(group => group.items.map((item, index) => (
+              <tr className="cost-row" key={item.priceCellId}>
+                {index === 0 && <th rowSpan={group.items.length} className="category">{ahsLabel(snapshot, group)}</th>}
+                <td className="cost-description" title={ahsLabel(snapshot, item)}>{item.labelCellId ? worksheetCellEditor(ahsCell(snapshot, item.labelCellId)!, "Nama uraian AHS") : item.name}</td>
+                <td className="currency-cell"><span>Rp</span>{legacySlot("AHS", `${group.name} · ${item.name}`, "NUMERIC_TEXT", ahsCell(snapshot, item.priceCellId))}</td>
+                <td>{legacySlot("AHS", `${group.name} · ${item.name} · Volume`, "NUMERIC_TEXT", ahsCell(snapshot, item.volumeCellId))}</td>
+                <td colSpan={2} className="currency-cell"><span>Rp</span>{legacySlot("AHS", `${group.name} · ${item.name} · Total`, "NUMERIC_TEXT", ahsCell(snapshot, item.totalCellId))}</td>
               </tr>
             )))}
             {summaryRows.map(label => header(label, "profit-row"))}
+            {fieldRowsFor("LABA")}
             <tr className="ahs-notes"><td colSpan={6}>Notes{legacySlot("AHS", "Notes", "TEXT")}</td></tr>
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );

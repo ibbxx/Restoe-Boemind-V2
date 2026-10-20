@@ -9,16 +9,27 @@ import { PROFILES } from "./profiles.ts";
 import type { EngineConfiguration } from "../engine/contracts.ts";
 import { DecimalArithmetic } from "../engine/decimal.ts";
 import { OPERATIONAL_DECIMAL_POLICY, OPERATIONAL_POLICY_VERSION_ID } from "./calculation-policy.ts";
+import { ahsFieldUnit } from "./ahs-fields.ts";
 
 let referenceTemplate: WorkbookSnapshot | undefined;
 
 export function legacyConfiguration(s: WorkbookSnapshot, config: EngineConfiguration | null): EngineConfiguration {
-  const cells = s.worksheets.flatMap(w => w.tables.flatMap(t => t.cells.map(c => ({ cell: c, label: t.rows.find(r => r.id === c.rowId)?.label ?? "" }))));
+  const cells = s.worksheets.flatMap(w => w.tables.flatMap(t => t.cells.map(c => ({ cell: c, label: t.rows.find(r => r.id === c.rowId)?.label ?? "",
+    column: t.columns.find(column => column.id === c.columnId)?.label }))));
   const ids = new Set(cells.map(c => c.cell.id));
   const present = new Map(config?.units.map(u => [u.cellId, u]));
   return { version: config?.version ?? "legacy-sheet-precision18-v1", policyVersionId: config?.policyVersionId ?? OPERATIONAL_POLICY_VERSION_ID,
     decimal: config?.decimal ?? OPERATIONAL_DECIMAL_POLICY,
-    units: cells.map(({ cell, label }) => {
+    units: cells.map(({ cell, label, column }) => {
+      if (label === "ahs-field") {
+        const field = s.ahsFields?.find(f => f.valueCellId === cell.id);
+        const unit = field ? ahsFieldUnit(field.valueType) : "text";
+        return { cellId: cell.id, symbol: unit === "text" ? "1" : unit, dimensions: units[unit] };
+      }
+      if (label === "ahs-extra") {
+        const unit = column === "I" ? "IDR/L" : column === "J" ? "L" : column === "K" ? "IDR" : "text";
+        return { cellId: cell.id, symbol: unit === "text" ? "1" : unit, dimensions: units[unit] };
+      }
       if (label.startsWith("@EV!") && (label.endsWith("|caption") || label.endsWith(":Nama vendor") || label.endsWith(":Notes"))) {
         return { cellId: cell.id, symbol: "1", dimensions: {} };
       }
@@ -259,7 +270,9 @@ export function makeAhsSaleInput(s: WorkbookSnapshot): WorkbookSnapshot {
     const saleFormulaId = sale.source.kind === "FORMULA" ? sale.source.formulaId : null;
     const oldFormula = saleFormulaId ? s.formulas.find(f => f.id === saleFormulaId) : undefined;
     if (oldFormula && oldFormula.expression !== `@{${gross.id}}/1.11`) continue;
-    const grossExpression = `SUM(@{${sale.id}},@{${pbbkb.id}},@{${ppn.id}})`;
+    const incomeGroups = s.ahsGroups?.filter(g => g.profile === profile && g.section === "PENDAPATAN");
+    const priceIds = incomeGroups?.length ? incomeGroups.flatMap(g => g.items.map(item => item.priceCellId)) : [sale.id, pbbkb.id, ppn.id];
+    const grossExpression = `SUM(${priceIds.map(id => `@{${id}}`).join(",")})`;
     const grossFormulaId = gross.source.kind === "FORMULA" ? gross.source.formulaId : null;
     if (grossFormulaId && s.formulas.find(f => f.id === grossFormulaId)?.expression !== grossExpression) continue;
     if (gross.source.kind === "FORMULA" && sale.source.kind === "INPUT") continue;
@@ -273,7 +286,7 @@ export function makeAhsSaleInput(s: WorkbookSnapshot): WorkbookSnapshot {
     const formulaId = gross.source.kind === "INPUT" ? id<"formula">() : null;
     pending.push({ profile, gross, sale, input, oldFormulaId: oldFormula?.id ?? null,
       formula: formulaId ? { id: formulaId, targetCellId: gross.id,
-        expression: grossExpression, referenceCellIds: [sale.id, pbbkb.id, ppn.id],
+        expression: grossExpression, referenceCellIds: priceIds,
         activation: "ACTIVE", sourceKind: "OPERATIONAL_OVERRIDE", provenance: null } : null });
   }
   if (!pending.length) return s;

@@ -70,6 +70,10 @@ function removeAddend(ast: Ast, cellIds: ReadonlySet<string>, address: string): 
   return ast;
 }
 
+export function removeFormulaAddends(expression: string, cellIds: ReadonlySet<string>, address: string): string {
+  return formulaText(removeAddend(parseFormula(expression), cellIds, address) ?? { kind: "number", text: "0" });
+}
+
 export function removeVendorComponent(snapshot: WorkbookSnapshot, componentId: string, configuration: EngineConfiguration): WorkbookSnapshot {
   const component = removableVendorComponents(snapshot).find(component => component.labelCell?.id === componentId);
   requireCondition(component, "Hanya uraian tambahan yang dapat dihapus.");

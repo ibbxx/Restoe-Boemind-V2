@@ -72,7 +72,9 @@ export function parseMappingDefinition(value: unknown): MappingDefinition {
 export function parseSnapshot(value: unknown): WorkbookSnapshot {
   const version = (value as { schemaVersion?: unknown } | null)?.schemaVersion;
   const root = object(value, ["schemaVersion", "id", "projectId", "project", "analysisId", "analysis", "mappings", "selectedOfferId",
-    "activeProfile", "profiles", "worksheets", "formulas", "policy", ...(version === 3 ? ["workbook"] : [])]);
+    "activeProfile", "profiles", "worksheets", "formulas", "policy", ...(version === 3 ? ["workbook"] : []),
+    ...(value && Object.hasOwn(value, "ahsGroups") ? ["ahsGroups"] : []),
+    ...(value && Object.hasOwn(value, "ahsFields") ? ["ahsFields"] : [])]);
   requireCondition(version === 2 || version === 3, "Unsupported snapshot schema version; legacy ownership must be migrated explicitly.");
   const state = object(root.analysis, ["analysis", "vendors", "offers"]);
   const analysis = object(state.analysis, ["id", "projectId", "name"]);
@@ -83,6 +85,26 @@ export function parseSnapshot(value: unknown): WorkbookSnapshot {
   const policyStatus = choice(policyObject.status, ["CONFIGURED", "UNCONFIGURED"]);
   const snapshot: WorkbookSnapshot = {
     schemaVersion: version,
+    ...(Object.hasOwn(root, "ahsGroups") ? { ahsGroups: array(root.ahsGroups).map(raw => {
+      const g = object(raw, ["id", "profile", "name", "builtin", "labelCellId", "items", ...(raw && Object.hasOwn(raw, "section") ? ["section"] : [])]);
+      requireCondition(typeof g.builtin === "boolean", "Invalid AHS group kind.");
+      return { ...(Object.hasOwn(g, "section") ? { section: choice(g.section, ["PENDAPATAN", "BIAYA"]) } : {}),
+        id: parseStableId<"ahs-group">(g.id), profile: parseProfile(g.profile), name: text(g.name, true), builtin: g.builtin,
+        labelCellId: nullableId<"cell">(g.labelCellId), items: array(g.items).map(raw => {
+          const item = object(raw, ["name", "builtin", "labelCellId", "priceCellId", "volumeCellId", "totalCellId"]);
+          requireCondition(typeof item.builtin === "boolean", "Invalid AHS item kind.");
+          return { name: text(item.name, true), builtin: item.builtin, labelCellId: nullableId<"cell">(item.labelCellId),
+            priceCellId: parseStableId<"cell">(item.priceCellId), volumeCellId: parseStableId<"cell">(item.volumeCellId), totalCellId: parseStableId<"cell">(item.totalCellId) };
+        }) };
+    }) } : {}),
+    ...(Object.hasOwn(root, "ahsFields") ? { ahsFields: array(root.ahsFields).map(raw => {
+      const f = object(raw, ["section", "profile", "name", "labelCellId", "valueCellId", "valueType"]);
+      const section = choice(f.section, ["INFORMASI", "LABA"]);
+      const valueType = choice(f.valueType, ["TEXT", "NUMBER", "IDR", "IDR/L", "PERCENT"]);
+      requireCondition(section === "INFORMASI" ? ["TEXT", "NUMBER"].includes(valueType) : valueType !== "TEXT", "Jenis nilai tidak sesuai bagian AHS.");
+      return { section, valueType, profile: parseProfile(f.profile), name: text(f.name, true),
+        labelCellId: parseStableId<"cell">(f.labelCellId), valueCellId: parseStableId<"cell">(f.valueCellId) };
+    }) } : {}),
     ...(version === 3 ? { workbook: parseDynamicWorkbook(root.workbook) } : {}),
     id: parseStableId<"snapshot">(root.id),
     projectId: parseStableId<"project">(root.projectId),
@@ -210,6 +232,59 @@ function validateReferences(s: WorkbookSnapshot) {
       t.columnOrder.includes(c.columnId), "Cell refers to another table or missing row/column."));
   }
   const byCell = new Map(cells.map(c => [c.id, c]));
+  const ahsCellIds = new Set(s.worksheets.filter(w => w.stage === "AHS").flatMap(w => w.tables.flatMap(t => t.cells.map(c => c.id))));
+  unique((s.ahsGroups ?? []).map(g => g.profile + ":" + g.id), "AHS groups");
+  const ahsMembers: string[] = [];
+  const ahsNames = new Set<string>();
+  const ahsLabelIds: string[] = [];
+  for (const group of s.ahsGroups ?? []) {
+    requireCondition(group.items.length > 0, "Kelompok AHS wajib memiliki uraian.");
+    const memberIds = [...(group.labelCellId ? [group.labelCellId] : []), ...group.items.flatMap(item =>
+      [item.priceCellId, item.volumeCellId, item.totalCellId, ...(item.labelCellId ? [item.labelCellId] : [])])];
+    requireCondition(memberIds.every(id => ahsCellIds.has(id) && byCell.get(id)?.scope === group.profile), "Referensi kelompok AHS hilang atau lintas profil.");
+    const nameOf = (entry: { name: string; labelCellId: string | null; builtin: boolean }) => {
+      const source = entry.labelCellId ? byCell.get(parseStableId<"cell">(entry.labelCellId))?.source : undefined;
+      if (!entry.builtin) requireCondition(source?.kind === "INPUT" && source.input.kind === "TEXT" && source.input.text.trim(), "Nama tambahan AHS wajib berupa teks dan tidak boleh kosong.");
+      return (source?.kind === "INPUT" && source.input.kind === "TEXT" ? source.input.text : entry.name).trim().toLocaleLowerCase("id-ID");
+    };
+    const groupName = group.profile + ":" + (group.section ?? "BIAYA") + ":" + nameOf(group);
+    requireCondition(!ahsNames.has(groupName), "Nama kelompok sudah digunakan."); ahsNames.add(groupName);
+    if (group.labelCellId) ahsLabelIds.push(group.labelCellId);
+    const names = new Set<string>();
+    for (const item of group.items) {
+      unique([item.priceCellId, item.volumeCellId, item.totalCellId, ...(item.labelCellId ? [item.labelCellId] : [])], "AHS item cells");
+      ahsMembers.push(item.priceCellId, item.volumeCellId, item.totalCellId);
+      if (item.labelCellId) ahsLabelIds.push(item.labelCellId);
+      const name = nameOf(item);
+      requireCondition(!names.has(name), "Nama uraian sudah digunakan dalam kelompok ini."); names.add(name);
+      if (!item.builtin) {
+        const source = byCell.get(item.priceCellId)!.source;
+        requireCondition(source.kind === "FORMULA" || (source.kind === "INPUT" && (source.input.kind === "UNSET" ||
+          (source.input.kind === "NUMERIC_TEXT" && source.input.text.length <= 258 && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(source.input.text)))), "Biaya per liter wajib berupa angka atau rumus.");
+      }
+    }
+  }
+  unique(ahsMembers, "AHS group membership");
+  const reservedNames = {
+    INFORMASI: ["Tgl Analisis (Rn)", "Sumber", "Marketing", "Lokasi", "Pembayaran", "Dokumen", "Harga Keekonomian", "Diskon", "Harga Include"],
+    LABA: ["LABA KOTOR", "SELISIH PPN", "LABA BERSIH", "LABA BERSIH PER LITER", "PERSENTASE"],
+  };
+  const fieldNames = new Set<string>();
+  for (const field of s.ahsFields ?? []) {
+    requireCondition([field.labelCellId, field.valueCellId].every(id => ahsCellIds.has(id) && byCell.get(id)?.scope === field.profile) &&
+      field.labelCellId !== field.valueCellId && !ahsMembers.includes(field.valueCellId), "Referensi uraian AHS hilang atau lintas profil.");
+    const label = byCell.get(field.labelCellId)!.source;
+    requireCondition(label.kind === "INPUT" && label.input.kind === "TEXT" && label.input.text.trim(), "Nama uraian AHS wajib berupa teks.");
+    const name = label.input.text.trim().toLocaleLowerCase("id-ID"), key = `${field.profile}:${field.section}:${name}`;
+    requireCondition(!fieldNames.has(key) && !reservedNames[field.section].some(n => n.toLocaleLowerCase("id-ID") === name), "Nama uraian sudah digunakan.");
+    fieldNames.add(key); ahsLabelIds.push(field.labelCellId);
+    const value = byCell.get(field.valueCellId)!.source;
+    requireCondition(value.kind !== "MAPPING" && (field.valueType === "TEXT" || value.kind === "FORMULA" || (value.kind === "INPUT" &&
+      (value.input.kind === "UNSET" || (value.input.kind === "NUMERIC_TEXT" && value.input.text.length <= 258 && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value.input.text))))), "Nilai uraian AHS wajib berupa angka atau rumus.");
+  }
+  unique((s.ahsFields ?? []).map(f => f.valueCellId), "AHS fields");
+  unique(ahsLabelIds, "AHS labels");
+  unique([...ahsMembers, ...ahsLabelIds, ...(s.ahsFields ?? []).map(f => f.valueCellId)], "AHS cell roles");
   for (const m of s.mappings) {
     const source = byCell.get(m.sourceCellId);
     const target = byCell.get(m.targetCellId);
