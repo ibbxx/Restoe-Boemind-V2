@@ -28,6 +28,9 @@ import { AuthenticationError } from "../src/server/supabase-auth.ts";
 
 const migrations = new URL("../supabase/migrations/", import.meta.url);
 const migrationFiles = readdirSync(migrations).filter(f => f.endsWith(".sql")).sort();
+const currentOnlyMigration = migrationFiles.find(file => file.includes("20261019071911_current_only_procurement"))!;
+const deleteAnalysisMigration = migrationFiles.find(file => file.includes("202610200001_allow_analysis_delete"))!;
+const deleteProjectMigration = migrationFiles.find(file => file.includes("20261020042433_allow_project_delete"))!;
 const actor = id<"user">(), other = id<"user">();
 
 function legacyPayload(s: WorkbookSnapshot) {
@@ -68,7 +71,9 @@ test("current-only migration, repeated Save, isolation and AHS round trips", asy
     admin = postgres({ host: "127.0.0.1", port, user: "postgres", database: "postgres", max: 1, onnotice: () => {} });
     await admin.unsafe(`create role anon; create role authenticated; create schema auth;
       create function auth.uid() returns uuid language sql stable as 'select nullif(current_setting(''request.jwt.claim.sub'',true),'''')::uuid';`);
-    for (const file of migrationFiles.slice(0, -1)) await admin.begin(tx => tx.unsafe(readFileSync(new URL(file, migrations), "utf8")));
+    for (const file of migrationFiles.filter(file => file !== currentOnlyMigration && file !== deleteAnalysisMigration && file !== deleteProjectMigration)) {
+      await admin.begin(tx => tx.unsafe(readFileSync(new URL(file, migrations), "utf8")));
+    }
 
     let dynamic = currentSnapshot(prepareVendorColumns(createProcurementWorkbook("Project migration", "Dynamic")));
     dynamic = numericCell(dynamic, dynamic.workbook!.offers[0]!.baseCellId, "20000");
@@ -102,13 +107,13 @@ test("current-only migration, repeated Save, isolation and AHS round trips", asy
     await t.test("migration refuses missing current data and rolls back without deleting archives", async () => {
       await assert.rejects(admin!.begin(async tx => {
         await tx`insert into procurement.analyses values (${id<"analysis">()},${dynamic.projectId},${actor},'Missing current')`;
-        await tx.unsafe(readFileSync(new URL(migrationFiles.at(-1)!, migrations), "utf8"));
+        await tx.unsafe(readFileSync(new URL(currentOnlyMigration, migrations), "utf8"));
       }), /Every existing Analysis must have current data/);
       const [old] = await admin!`select to_regclass('procurement.revisions') is not null as present`;
       assert.equal(old!.present, true);
     });
     await t.test("migration retains active inputs, formulas, IDs and numerical results", async () => {
-      await admin!.begin(tx => tx.unsafe(readFileSync(new URL(migrationFiles.at(-1)!, migrations), "utf8")));
+      await admin!.begin(tx => tx.unsafe(readFileSync(new URL(currentOnlyMigration, migrations), "utf8")));
       for (const [i, s] of seeds.entries()) {
         const [row] = await admin!`select data from procurement.current_workbooks where analysis_id=${s.analysisId}`;
         const decoded = decodeWorkbook(row!.data, { analysisId: s.analysisId, projectId: s.projectId, analysisName: s.analysis.analysis.name, projectName: s.project.name });
@@ -130,6 +135,8 @@ test("current-only migration, repeated Save, isolation and AHS round trips", asy
       const functions = await admin!`select proname from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='procurement'`;
       assert.deepEqual(functions.map(f => f.proname), ["current_actor_id"]);
     });
+    await admin!.begin(tx => tx.unsafe(readFileSync(new URL(deleteAnalysisMigration, migrations), "utf8")));
+    await admin!.begin(tx => tx.unsafe(readFileSync(new URL(deleteProjectMigration, migrations), "utf8")));
     await admin.unsafe("create role procurement_app_test login noinherit; grant procurement_runtime to procurement_app_test;");
     login = postgres({ host: "127.0.0.1", port, user: "procurement_app_test", database: "postgres", max: 2, onnotice: () => {} });
     const repo = new PostgresWorkbookRepository(login, actor);
@@ -314,6 +321,32 @@ test("current-only migration, repeated Save, isolation and AHS round trips", asy
       assert.deepEqual(await repo.current(dynamic.analysisId), before);
       const denied = createWorkbookHandler({ async authenticate() { throw new AuthenticationError(); } }, () => repo);
       assert.equal((await denied(new Request("http://localhost/api/workbook"))).status, 401);
+    });
+    await t.test("deleting an analysis removes its current workbook and database row", async () => {
+      const handler = createWorkbookHandler({ async authenticate() { return actor; } }, () => repo);
+      const response = await handler(new Request("http://localhost/api/workbook", {
+        method: "DELETE", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operation: "DELETE_ANALYSIS", analysisId: legacy.analysisId }),
+      }));
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { deleted: true, analysisId: legacy.analysisId });
+      assert.equal(await repo.current(legacy.analysisId), null);
+      const [analysis] = await admin!`select count(*)::int as count from procurement.analyses where id = ${legacy.analysisId}`;
+      const [workbook] = await admin!`select count(*)::int as count from procurement.current_workbooks where analysis_id = ${legacy.analysisId}`;
+      assert.equal(analysis!.count, 0); assert.equal(workbook!.count, 0);
+    });
+    await t.test("deleting a project removes its analyses and current workbooks", async () => {
+      const handler = createWorkbookHandler({ async authenticate() { return actor; } }, () => repo);
+      const response = await handler(new Request("http://localhost/api/workbook", {
+        method: "DELETE", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operation: "DELETE_PROJECT", projectId: dynamic.projectId }),
+      }));
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { deleted: true, projectId: dynamic.projectId });
+      const [project] = await admin!`select count(*)::int as count from procurement.projects where id = ${dynamic.projectId}`;
+      const [analyses] = await admin!`select count(*)::int as count from procurement.analyses where project_id = ${dynamic.projectId}`;
+      const [workbooks] = await admin!`select count(*)::int as count from procurement.current_workbooks where project_id = ${dynamic.projectId}`;
+      assert.equal(project!.count, 0); assert.equal(analyses!.count, 0); assert.equal(workbooks!.count, 0);
     });
   } finally {
     await login?.end({ timeout: 3 }); await admin?.end({ timeout: 3 });

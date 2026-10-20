@@ -64,7 +64,7 @@ export async function enterRuntimeRole(tx: postgres.TransactionSql): Promise<voi
     and not exists (select 1 from objects o where o.relname not in ('projects','analyses','current_workbooks')
       and (has_any_column_privilege(current_user, o.oid, 'SELECT,INSERT,UPDATE,REFERENCES')
         or has_table_privilege(current_user, o.oid, 'DELETE,TRUNCATE,TRIGGER')))
-    and not exists (select 1 from objects o where
+    and not exists (select 1 from objects o where o.relname not in ('projects','analyses','current_workbooks') and
       has_table_privilege(current_user, o.oid, 'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
       or has_any_column_privilege(current_user, o.oid, 'REFERENCES')
       or has_any_column_privilege(session_user, o.oid, 'SELECT,INSERT,UPDATE,REFERENCES'))
@@ -76,7 +76,8 @@ export async function enterRuntimeRole(tx: postgres.TransactionSql): Promise<voi
         and has_column_privilege(current_user, o.oid, a.attnum, 'UPDATE')))
     and not exists (select 1 from objects o cross join lateral aclexplode(o.relacl) a
       where (a.grantee = 0 or a.grantee in (select oid from actors))
-        and (a.is_grantable or a.privilege_type not in ('SELECT','INSERT')))
+        and (a.is_grantable or (a.privilege_type not in ('SELECT','INSERT')
+          and not (a.privilege_type = 'DELETE' and o.relname in ('projects','analyses','current_workbooks')))))
     and not exists (select 1 from objects o join pg_attribute c on c.attrelid = o.oid cross join lateral aclexplode(c.attacl) a
       where (a.grantee = 0 or a.grantee in (select oid from actors)) and a.is_grantable)
     as safe, exists (select 1 from information_schema.columns where table_schema = 'procurement'

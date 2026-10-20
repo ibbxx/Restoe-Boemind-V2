@@ -16,7 +16,7 @@ import { addOffer, addVendor } from "../domain/commands.ts";
 import { appendField } from "../domain/workflow.ts";
 import { cellCodes, describeFormula, displayCellId, displayFormula, resolveFormula } from "../domain/cell-address.ts";
 import { prepareLegacySheet, vendorColumn } from "../domain/legacy-sheet.ts";
-import { numericInput } from "./numeric-input.ts";
+import { numericInput } from "../domain/numeric-input.ts";
 import { isAhsVolumeCell, isAhsVolumeFollower } from "../domain/ahs-volume.ts";
 import { WorksheetCellInput } from "./worksheet-cell-input.tsx";
 import { printWorkbook } from "./print-workbook.ts";
@@ -42,7 +42,7 @@ interface SurfaceProps {
   onEditing?: () => void;
   onSave?: () => void;
   onInput?: (stage: Stage, label: string, value: string, kind: "TEXT" | "NUMERIC_TEXT", cell: CellSnapshot | undefined) => void;
-  onSelectOffer?: (selectionId: string) => void;
+  onSelectOffer?: (selectionId: string, vendorName: string) => void;
 }
 
 const summaryRows = ["LABA KOTOR", "SELISIH PPN", "LABA BERSIH", "LABA BERSIH PER LITER", "PERSENTASE"];
@@ -444,9 +444,14 @@ export function WorksheetSurface(props: SurfaceProps) {
 
   function handleSelectOffer(selectionId: string) {
     if (snapshot?.workbook && actor) {
-      apply(() => selectSheetOffer(snapshot, parseStableId<"offer">(selectionId), actor));
+      apply(() => {
+        const next = selectSheetOffer(snapshot, parseStableId<"offer">(selectionId), actor);
+        const source = next.worksheets.flatMap(w => w.tables.flatMap(t => t.cells.map(cell => ({ cell, label: t.rows.find(row => row.id === cell.rowId)?.label })))).find(field =>
+          field.cell.scope === next.activeProfile && next.worksheets.find(w => w.stage === "AHS")?.tables.some(t => t.cells.some(cell => cell.id === field.cell.id)) && field.label === "Sumber");
+        return source?.cell.source.kind === "INPUT" ? editSheetInput(next, source.cell, { kind: "TEXT", text: vendorDisplayName(selectionId) }) : next;
+      });
     } else if (onSelectOffer) {
-      onSelectOffer(selectionId);
+      onSelectOffer(selectionId, vendorDisplayName(selectionId));
     }
   }
 

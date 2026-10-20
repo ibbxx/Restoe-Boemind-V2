@@ -5,7 +5,7 @@ import { object, requireCondition } from "../domain/validation.ts";
 import type { SessionAuthenticator } from "./supabase-auth.ts";
 import { AuthenticationError, ServiceUnavailableError } from "./supabase-auth.ts";
 
-type Repository = Pick<PostgresWorkbookRepository, "save" | "current" | "listProjects" | "listAnalyses"> & { readonly timings?: Readonly<Record<string, number>> };
+type Repository = Pick<PostgresWorkbookRepository, "save" | "current" | "listProjects" | "listAnalyses" | "deleteAnalysis" | "deleteProject"> & { readonly timings?: Readonly<Record<string, number>> };
 type RepositoryFactory = (actorId: Awaited<ReturnType<SessionAuthenticator["authenticate"]>>) => Repository;
 const MAX_BODY = 5 * 1024 * 1024;
 class PayloadTooLargeError extends Error {}
@@ -41,7 +41,7 @@ export function createWorkbookHandler(auth: SessionAuthenticator, factory: Repos
       return response;
     };
     try {
-      if (!["GET", "POST"].includes(request.method)) return respond({ code: "METHOD_NOT_ALLOWED" }, 405);
+      if (!["GET", "POST", "DELETE"].includes(request.method)) return respond({ code: "METHOD_NOT_ALLOWED" }, 405);
       const actorId = await auth.authenticate(request);
       authDuration = performance.now() - started;
       repository = factory(actorId);
@@ -54,6 +54,18 @@ export function createWorkbookHandler(auth: SessionAuthenticator, factory: Repos
           case "current": return respond(await repository.current(analysisId));
           default: throw new TypeError("Unknown view.");
         }
+      }
+      if (request.method === "DELETE") {
+        const raw = await body(request);
+        requireCondition(raw !== null && typeof raw === "object" && !Array.isArray(raw), "Expected an object.");
+        const operation = (raw as Record<string, unknown>).operation;
+        requireCondition(operation === "DELETE_ANALYSIS" || operation === "DELETE_PROJECT", "Unknown operation.");
+        if (operation === "DELETE_ANALYSIS") {
+          const command = object(raw, ["operation", "analysisId"]);
+          return respond(await repository.deleteAnalysis(command.analysisId, actorId));
+        }
+        const command = object(raw, ["operation", "projectId"]);
+        return respond(await repository.deleteProject(command.projectId, actorId));
       }
       const command = object(await body(request), ["operation", "request"]);
       requireCondition(command.operation === "SAVE", "Unknown operation.");

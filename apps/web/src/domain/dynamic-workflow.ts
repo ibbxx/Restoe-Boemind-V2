@@ -97,7 +97,8 @@ export function addSheetVendor(snapshot: WorkbookSnapshot, name: string, pattern
     if (canonicalRow === 9) { kind = "INPUT"; cellSource = { kind: "INPUT", input: { kind: "TEXT", text: name.trim() } }; }
     else if (canonicalRow >= 10 && canonicalRow <= 17) {
       unit = "IDR/L";
-      if (source?.formula && canonicalRow !== 10 && canonicalRow !== 13) {
+      const isSecondVendorPbbkb = pattern === "D" && canonicalRow === 12;
+      if (source?.formula && canonicalRow !== 10 && canonicalRow !== 13 && !isSecondVendorPbbkb) {
         kind = "RESULT";
         const expression = formulaFromAddresses(source.formula, a => {
           requireCondition(a.startsWith(pattern), "Formula vendor merujuk ke kolom lain; pilih formula secara eksplisit.");
@@ -107,7 +108,7 @@ export function addSheetVendor(snapshot: WorkbookSnapshot, name: string, pattern
         formulas.push({ id: formulaId, targetCellId: cell.id, expression, referenceCellIds: [...new Set(references(parseFormula(expression), () => []))] as StableId<"cell">[], sourceKind: "WORKBOOK_SOURCE", activation: "ACTIVE", provenance: { workbookSha256: SOURCE_HASH, sheet: sheet.name, address: pattern + rowNumber } });
         cellSource = { kind: "FORMULA", formulaId };
       } else if (canonicalRow !== 17) {
-        kind = "INPUT"; cellSource = { kind: "INPUT", input: canonicalRow === 10 && cell.source.kind === "INPUT" && cell.source.input.kind === "NUMERIC_TEXT"
+        kind = "INPUT"; cellSource = { kind: "INPUT", input: isSecondVendorPbbkb ? { kind: "UNSET" } : canonicalRow === 10 && cell.source.kind === "INPUT" && cell.source.input.kind === "NUMERIC_TEXT"
           ? cell.source.input : canonicalRow === 10 || (source?.number && Number(source.number) !== 0) ? { kind: "UNSET" } : { kind: "NUMERIC_TEXT", text: "0" } };
       }
     } else if (canonicalRow === 18) { kind = "INPUT"; cellSource = { kind: "INPUT", input: { kind: "UNSET" } }; }
@@ -213,7 +214,22 @@ export function prepareVendorColumns(s: WorkbookSnapshot): WorkbookSnapshot {
     const name = header?.source.kind === "INPUT" && header.source.input.kind === "TEXT" ? header.source.input.text.trim() : "";
     next = addSheetVendor(next, name || `Vendor ${index + 1}`, (["C", "D", "E"] as const)[Math.min(index, 2)]!, columnId);
   }
-  return next;
+  const vendorColumn = table.columnOrder.slice(1).find(columnId => next.workbook!.offers.findIndex(offer => offer.columnId === columnId) === 1);
+  if (!vendorColumn) return next;
+  const pbbkb = next.worksheets.find(w => w.stage === "EVALUASI_VENDOR")?.tables.flatMap(t => t.cells).find(cell =>
+    cell.columnId === vendorColumn && next.workbook!.cells.some(presentation => presentation.cellId === cell.id && presentation.address.endsWith("12")));
+  if (!pbbkb || pbbkb.source.kind !== "FORMULA") return next;
+  const formulaId = pbbkb.source.formulaId;
+  const formula = next.formulas.find(item => item.id === formulaId);
+  if (formula?.sourceKind !== "WORKBOOK_SOURCE" || formula.provenance?.address !== "D12") return next;
+  const formulaIds = new Set([formulaId]);
+  return changeWorkbook(next, {
+    formulas: next.formulas.filter(item => !formulaIds.has(item.id)),
+    worksheets: next.worksheets.map(worksheet => ({ ...worksheet, tables: worksheet.tables.map(table => ({ ...table,
+      cells: table.cells.map(cell => cell.id === pbbkb.id ? { ...cell, source: { kind: "INPUT" as const, input: { kind: "UNSET" as const } } } : cell),
+    })) })),
+    workbook: { ...next.workbook!, cells: next.workbook!.cells.map(cell => cell.cellId === pbbkb.id ? { ...cell, kind: "INPUT" as const } : cell) },
+  });
 }
 
 export function editSheetInput(s: WorkbookSnapshot, cell: CellSnapshot, input: CellInput) {

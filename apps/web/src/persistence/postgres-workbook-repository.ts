@@ -57,6 +57,33 @@ export class PostgresWorkbookRepository {
       select id, name, project_id from procurement.analyses where project_id = ${id} order by id`)]));
   }
 
+  async deleteAnalysis(value: unknown, actorId: unknown) {
+    const analysisId = parseStableId<"analysis">(value);
+    const actor = parseStableId<"user">(actorId);
+    if (actor !== this.actorId) throw new AccessDeniedError();
+    return this.transaction(async tx => {
+      await tx`select pg_advisory_xact_lock(hashtextextended(${'analysis:' + analysisId}, 0))`;
+      await tx`delete from procurement.current_workbooks where analysis_id = ${analysisId} and owner_id = ${actor}`;
+      const [deleted] = await tx<{ id: string }[]>`delete from procurement.analyses where id = ${analysisId} and owner_id = ${actor} returning id`;
+      if (!deleted) throw new AccessDeniedError();
+      return { deleted: true as const, analysisId: deleted.id };
+    });
+  }
+
+  async deleteProject(value: unknown, actorId: unknown) {
+    const projectId = parseStableId<"project">(value);
+    const actor = parseStableId<"user">(actorId);
+    if (actor !== this.actorId) throw new AccessDeniedError();
+    return this.transaction(async tx => {
+      await tx`select pg_advisory_xact_lock(hashtextextended(${'project:' + projectId}, 0))`;
+      await tx`delete from procurement.current_workbooks where project_id = ${projectId} and owner_id = ${actor}`;
+      await tx`delete from procurement.analyses where project_id = ${projectId} and owner_id = ${actor}`;
+      const [deleted] = await tx<{ id: string }[]>`delete from procurement.projects where id = ${projectId} and owner_id = ${actor} returning id`;
+      if (!deleted) throw new AccessDeniedError();
+      return { deleted: true as const, projectId: deleted.id };
+    });
+  }
+
   async save(value: unknown, actorId: unknown): Promise<SaveOutcome> {
     const started = performance.now();
     try {
