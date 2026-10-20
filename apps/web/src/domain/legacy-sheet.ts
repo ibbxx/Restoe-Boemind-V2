@@ -69,6 +69,8 @@ export function prepareLegacySheet(s: WorkbookSnapshot): WorkbookSnapshot {
   if (offers.length !== s.analysis.offers.length) s = changeWorkbook(s, { analysis: { ...s.analysis, vendors, offers } });
   const additions = new Map<string, TableSnapshot[]>();
   const formulas: FormulaDefinition[] = [...s.formulas];
+  const removedAutomaticFormulaIds = new Set<StableId<"formula">>();
+  const resetAutomaticPbbkb = new Set<StableId<"cell">>();
   const pending: { cell: CellSnapshot; expression: string; resolve: (address: string) => string }[] = [];
   const add = (stage: WorksheetSnapshot["stage"], scope: CellSnapshot["scope"], label: string, input: CellInput) => {
     const tableId = id<"table">(), rowId = id<"row">(), columnId = id<"column">();
@@ -111,7 +113,16 @@ export function prepareLegacySheet(s: WorkbookSnapshot): WorkbookSnapshot {
     [...vendorComponentLabels, ...extraLabels].forEach((label, position) => {
       const row = position < vendorComponentLabels.length ? position + 10 : extraRowNumbers.get(label)!;
       const existing = legacyVendorCell(s, offer.id, label);
-      if (existing) { cells.set(String(row), existing); return; }
+      const isSecondVendorPbbkb = pattern === "D" && label === "PBBKB";
+      if (existing) {
+        const formulaId = existing.source.kind === "FORMULA" ? existing.source.formulaId : undefined;
+        const automatic = formulaId ? s.formulas.find(formula => formula.id === formulaId) : undefined;
+        if (isSecondVendorPbbkb && automatic?.sourceKind === "WORKBOOK_SOURCE" && automatic.provenance?.address === "D12") {
+          removedAutomaticFormulaIds.add(automatic.id);
+          resetAutomaticPbbkb.add(existing.id);
+        }
+        cells.set(String(row), existing); return;
+      }
       const value = offer.values.find(v => v.label.toLocaleLowerCase("id-ID") === label.toLocaleLowerCase("id-ID"))?.input;
       const cell = add("EVALUASI_VENDOR", "SHARED", `@EV!${column}${row}|vendor:${offer.id}:${label}`, value ?? { kind: "UNSET" });
       cells.set(String(row), cell);
@@ -123,7 +134,7 @@ export function prepareLegacySheet(s: WorkbookSnapshot): WorkbookSnapshot {
           if (!found || !address.startsWith(column)) throw new Error("Referensi rumus vendor lama tidak ditemukan.");
           return found.id;
         } });
-      } else if (label !== "PPH" && label !== "Harga Dasar" && source?.formula && (!value || value.kind === "UNSET")) {
+      } else if (label !== "PPH" && label !== "Harga Dasar" && !isSecondVendorPbbkb && source?.formula && (!value || value.kind === "UNSET")) {
         pending.push({ cell, expression: source.formula, resolve: address => {
           const found = cells.get(address.replace(/^[A-Z]+/, ""));
           if (!found) throw new Error("Referensi template vendor tidak ditemukan.");
@@ -211,16 +222,17 @@ export function prepareLegacySheet(s: WorkbookSnapshot): WorkbookSnapshot {
       referenceCellIds: [...new Set(references(parseFormula(expression), () => []))] as StableId<"cell">[], activation: "ACTIVE", sourceKind: "OPERATIONAL_OVERRIDE", provenance: null });
     writers.set(item.cell.id, { kind: "FORMULA", formulaId });
   }
-  if (!additions.size && !writers.size) return s.policy.status === "CONFIGURED" ? s
+  if (!additions.size && !writers.size && !removedAutomaticFormulaIds.size) return s.policy.status === "CONFIGURED" ? s
     : changeWorkbook(s, { policy: { status: "CONFIGURED", versionId: id<"policy">() } });
   const worksheets = s.worksheets.map(w => ({ ...w, tables: [...w.tables, ...(additions.get(w.stage) ?? [])].map(t => ({ ...t,
-    cells: t.cells.map(c => writers.has(c.id) ? { ...c, source: writers.get(c.id)! } : c) })) }));
+    cells: t.cells.map(c => resetAutomaticPbbkb.has(c.id) ? { ...c, source: { kind: "INPUT" as const, input: { kind: "UNSET" as const } } }
+      : writers.has(c.id) ? { ...c, source: writers.get(c.id)! } : c) })) }));
   const all = worksheets.flatMap(w => w.tables.flatMap(t => t.cells));
-  return changeWorkbook(s, { worksheets, formulas,
+  return changeWorkbook(s, { worksheets, formulas: formulas.filter(formula => !removedAutomaticFormulaIds.has(formula.id)),
     policy: s.policy.status === "CONFIGURED" ? s.policy : { status: "CONFIGURED", versionId: id<"policy">() },
     profiles: Object.fromEntries(PROFILES.map(profile => [profile, {
     ...s.profiles[profile], cellIds: all.filter(c => c.scope === profile).map(c => c.id),
-    formulaIds: formulas.filter(f => all.some(c => c.id === f.targetCellId && c.scope === profile)).map(f => f.id),
+    formulaIds: formulas.filter(f => !removedAutomaticFormulaIds.has(f.id) && all.some(c => c.id === f.targetCellId && c.scope === profile)).map(f => f.id),
   }])) as unknown as WorkbookSnapshot["profiles"] });
 }
 

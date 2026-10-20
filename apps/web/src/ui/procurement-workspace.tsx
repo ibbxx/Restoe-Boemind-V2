@@ -3,20 +3,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, PointerEvent } from "react";
 import Image from "next/image";
-import { AlertTriangle, ChevronDown, ChevronUp, LogIn, Trash2 } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ChevronRight, LogIn, LogOut, Pencil, Save, Search, Trash2 } from "lucide-react";
 import type { WorkbookSnapshot } from "../domain/contracts.ts";
 import type { StableId } from "../domain/ids.ts";
 import { createStableId as id, parseStableId } from "../domain/ids.ts";
 import { updateCellInput } from "../domain/commands.ts";
 import { appendField } from "../domain/workflow.ts";
 import { analysisDateInput, analysisPeriod, createAnalysisWorkbook } from "../domain/analysis-creation.ts";
-import { captureSnapshot } from "../domain/snapshots.ts";
+import { canonicalJson, captureSnapshot } from "../domain/snapshots.ts";
 import type { SaveRequest, SaveOutcome, SavedWorkbook } from "../application/contracts.ts";
 import { FormulaEngine } from "../engine/formula-engine.ts";
 import type { EngineConfiguration, EngineRun } from "../engine/contracts.ts";
 import { api, ApiError, invalidateSessionRequests, readSession, saveRequestBody } from "./workbook-client.ts";
 import { WorksheetSurface } from "./worksheet-surface.tsx";
 import { LoadingIndicator } from "./loading-indicator.tsx";
+import { ConfirmationDialog } from "./confirmation-dialog.tsx";
 import { CardContent, CardDescription, CardFooter, CardHeader } from "../components/ui/card.tsx";
 import { prepareNumericBlanks } from "../domain/procurement-template.ts";
 import { prepareLegacySheet, legacyConfiguration, connectAhsHpp, makeAhsSaleInput } from "../domain/legacy-sheet.ts";
@@ -25,9 +26,14 @@ import { refreshCurrentOffers } from "../domain/current-offers.ts";
 import { connectAhsVolumes } from "../domain/ahs-volume.ts";
 import { prepareCalculationPolicy } from "../domain/calculation-policy.ts";
 import { prepareAhsRollups } from "../domain/ahs-groups.ts";
+import { ANALYSIS_STATUSES, analysisStatusLabel } from "../domain/analysis-status.ts";
+import type { AnalysisStatus } from "../domain/analysis-status.ts";
+import { matchesAnalysis, matchesName, projectLocationUrl, readProjectLocation } from "./project-navigation.ts";
+import type { ProjectLocation } from "./project-navigation.ts";
 
 type ProjectListItem = { id: string; name: string };
-type AnalysisListItem = { id: string; name: string; project_id: string };
+type AnalysisListItem = { id: string; name: string; project_id: string; status: AnalysisStatus; period: string | null };
+type Confirmation = { eyebrow: string; title: string; description: string; confirmLabel?: string; onConfirm: () => void };
 function field(form: FormData, name: string) { return String(form.get(name) ?? "").trim(); }
 function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); return new FormData(event.currentTarget); }
 export function ProcurementWorkspace() {
@@ -38,12 +44,18 @@ export function ProcurementWorkspace() {
   const loadingLabel = busy ? (saving ? "Menyimpan perubahan…" : "Memproses…") : "Menyiapkan cetakan…";
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [analyses, setAnalyses] = useState<AnalysisListItem[]>([]);
-  const [expandedProjectId, setExpandedProjectId] = useState<string | null>(null);
+  const [location, setLocation] = useState(() => readProjectLocation(""));
+  const locationRef = useRef(location);
+  const projectsRef = useRef<ProjectListItem[]>([]);
+  const historyIndex = useRef(0);
+  const restoringHistory = useRef<(() => void) | null>(null);
+  const acceptHistory = useRef(false);
   const [snapshot, setSnapshot] = useState<WorkbookSnapshot | null>(null);
   const [dirty, setDirty] = useState(false);
   const [configuration, setConfiguration] = useState<EngineConfiguration | null>(null);
   const configurationRef = useRef<EngineConfiguration | null>(null);
   const snapshotRef = useRef<WorkbookSnapshot | null>(null);
+  const savedSnapshotRef = useRef<WorkbookSnapshot | null>(null);
   const previewRef = useRef<EngineRun | null>(null);
   const [calculatedPreview, setCalculatedPreview] = useState<{ snapshotId: string; run: EngineRun | null; error: string } | null>(null);
   const pendingSave = useRef<SaveRequest | null>(null);
@@ -52,8 +64,10 @@ export function ProcurementWorkspace() {
   const [newWorkbookProjectId, setNewWorkbookProjectId] = useState<string | null>(null);
   const [newAnalysisDate, setNewAnalysisDate] = useState("");
   const [analysisToDelete, setAnalysisToDelete] = useState<{ projectId: string; analysis: AnalysisListItem } | null>(null);
+  const [analysisToEdit, setAnalysisToEdit] = useState<AnalysisListItem | null>(null);
   const [projectToDelete, setProjectToDelete] = useState<ProjectListItem | null>(null);
   const [projectContextMenu, setProjectContextMenu] = useState<{ project: ProjectListItem; x: number; y: number } | null>(null);
+  const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [volumeError, setVolumeError] = useState("");
   const volumeErrorRef = useRef("");
 
@@ -66,6 +80,7 @@ export function ProcurementWorkspace() {
   }, []);
 
   const saveFlight = useRef<Promise<void> | null>(null);
+  const taskSequence = useRef(0);
   const workspaceEpoch = useRef(0);
   const savedVersion = useRef<StableId<"version"> | null>(null);
   const projectLongPressTimer = useRef<number | null>(null);
@@ -78,6 +93,19 @@ export function ProcurementWorkspace() {
   const requireLogin = useCallback((status: string) => {
     invalidateSessionRequests(); workspaceEpoch.current++;
     setActor(null); setError(""); setMessage(status); setBusy(false);
+  }, []);
+
+  const writeLocation = useCallback((next: ProjectLocation, mode: "push" | "replace" = "push") => {
+    if (mode === "push") historyIndex.current++;
+    window.history[mode === "push" ? "pushState" : "replaceState"]({ ...window.history.state, procurementIndex: historyIndex.current }, "", projectLocationUrl(next));
+    locationRef.current = next; setLocation(next);
+  }, []);
+
+  const clearWorksheet = useCallback(() => {
+    snapshotRef.current = null; savedSnapshotRef.current = null; configurationRef.current = null;
+    setSnapshot(null); savedVersion.current = null; setConfiguration(null); setDirty(false);
+    setNewWorkbookProjectId(null); pendingSave.current = null; setVolumeError(""); volumeErrorRef.current = "";
+    previewRef.current = null; setCalculatedPreview(null);
   }, []);
 
   const load = useCallback(async (analysisId: string) => {
@@ -94,26 +122,59 @@ export function ProcurementWorkspace() {
     const mappingActor = lastActor.current;
     if (mappingActor) s = prepareSelectedVendorMappings(s, mappingActor);
     config = s.workbook ? s.workbook.configuration : legacyConfiguration(s, config);
+    const analysisList = await api<AnalysisListItem[]>(`/api/workbook?view=analyses&projectId=${s.projectId}`);
+    if (workspaceEpoch.current !== epoch || lastActor.current !== actorId) return;
     previewRef.current = null; configurationRef.current = config; snapshotRef.current = s; setSnapshot(s);
     savedVersion.current = stored.version;
-    setConfiguration(config); setDirty(s.id !== stored.snapshot.id); pendingSave.current = null;
-    window.history.replaceState(null, "", "?analysisId=" + analysisId);
-  }, [prepareVolumes]);
+    setConfiguration(config); savedSnapshotRef.current = s; setDirty(false); pendingSave.current = null;
+    setAnalyses(analysisList);
+    writeLocation({ ...locationRef.current, projectId: s.projectId, analysisId }, "replace");
+    setMessage("Analisis dimuat.");
+  }, [prepareVolumes, writeLocation]);
   const refreshProjects = useCallback(async () => {
     const actorId = lastActor.current;
     const next = await api<ProjectListItem[]>("/api/workbook?view=projects");
-    if (lastActor.current === actorId) setProjects(next);
+    if (lastActor.current === actorId) { projectsRef.current = next; setProjects(next); }
   }, []);
+
+  const restoreLocation = useCallback(async (next: ProjectLocation) => {
+    locationRef.current = next; setLocation(next); setError("");
+    setAnalysisToDelete(null); setAnalysisToEdit(null); setProjectToDelete(null); setProjectContextMenu(null); setConfirmation(null);
+    if (next.analysisId) {
+      if (snapshotRef.current?.analysisId !== next.analysisId) {
+        clearWorksheet(); setAnalyses([]);
+        await load(parseStableId<"analysis">(next.analysisId));
+      }
+      return;
+    }
+    const epoch = ++workspaceEpoch.current, actorId = lastActor.current;
+    clearWorksheet(); setAnalyses([]);
+    if (!next.projectId) { setMessage("Daftar proyek."); return; }
+    const projectId = parseStableId<"project">(next.projectId);
+    if (!projectsRef.current.some(project => project.id === projectId)) throw new Error("Proyek tidak ditemukan atau tidak dapat diakses.");
+    const items = await api<AnalysisListItem[]>(`/api/workbook?view=analyses&projectId=${projectId}`);
+    if (workspaceEpoch.current === epoch && lastActor.current === actorId) { setAnalyses(items); setMessage("Pilih analisis yang akan dibuka."); }
+  }, [clearWorksheet, load]);
+
+  function navigate(next: ProjectLocation, discardDraft = false) {
+    if (dirty && !discardDraft) {
+      setConfirmation({ eyebrow: "Pindah halaman", title: "Buang draft yang belum disimpan?", description: "Perubahan pada analisis ini belum disimpan dan akan hilang jika Anda meninggalkan worksheet.", confirmLabel: "Lanjutkan", onConfirm: () => navigate(next, true) });
+      return;
+    }
+    writeLocation(next);
+    void task(() => restoreLocation(next));
+  }
+
+  function updateFilters(next: Partial<Pick<ProjectLocation, "projectQuery" | "analysisQuery" | "status" | "period">>) {
+    writeLocation({ ...locationRef.current, ...next }, "replace");
+  }
   function showAnalysisForm(projectId: string) {
     setNewAnalysisDate(analysisDateInput());
     setNewWorkbookProjectId(projectId);
     setError("");
   }
-  async function showProject(projectId: string) {
-    if (expandedProjectId === projectId) { setExpandedProjectId(null); setAnalyses([]); return; }
-    setExpandedProjectId(projectId); setNewWorkbookProjectId(null);
-    setAnalyses(await api(`/api/workbook?view=analyses&projectId=${projectId}`));
-    setMessage("Pilih lembar perhitungan yang akan dibuka.");
+  function showProject(projectId: string) {
+    navigate({ ...locationRef.current, projectId, analysisId: null, analysisQuery: "", status: "", period: "" });
   }
   function openProjectContextMenu(project: ProjectListItem, x: number, y: number) {
     setProjectContextMenu({ project, x: Math.min(x, window.innerWidth - 220), y: Math.min(y, window.innerHeight - 70) });
@@ -131,11 +192,33 @@ export function ProcurementWorkspace() {
     projectLongPressTimer.current = null;
   }
   function openAnalysis(analysisId: string) {
-    if (dirty && !window.confirm("Buka Analysis lain dan buang draft yang belum disimpan?")) return;
-    void task(async () => { await load(analysisId); setMessage("Analysis dimuat."); });
+    navigate({ ...locationRef.current, analysisId });
   }
   function removeAnalysis(projectId: string, analysis: AnalysisListItem) {
     setAnalysisToDelete({ projectId, analysis });
+  }
+  function updateAnalysisMetadata(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!analysisToEdit) return;
+    const form = new FormData(event.currentTarget);
+    const analysis = analysisToEdit;
+    const name = field(form, "analysisName");
+    const status = field(form, "analysisStatus") as AnalysisStatus;
+    setAnalysisToEdit(null);
+    void task(async () => {
+      await api("/api/workbook", { method: "POST", body: JSON.stringify({ operation: "UPDATE_ANALYSIS", analysisId: analysis.id, name, status }) });
+      setAnalyses(current => current.map(item => item.id === analysis.id ? { ...item, name, status } : item));
+      setMessage("Analisis diperbarui.");
+    });
+  }
+  function updateActiveAnalysisStatus(status: AnalysisStatus) {
+    const analysis = snapshot && analyses.find(item => item.id === snapshot.analysisId);
+    if (!analysis) return;
+    void task(async () => {
+      await api("/api/workbook", { method: "POST", body: JSON.stringify({ operation: "UPDATE_ANALYSIS", analysisId: analysis.id, name: analysis.name, status }) });
+      setAnalyses(current => current.map(item => item.id === analysis.id ? { ...item, status } : item));
+      setMessage("Status analisis diperbarui.");
+    });
   }
   function confirmRemoveAnalysis() {
     if (!analysisToDelete) return;
@@ -146,7 +229,9 @@ export function ProcurementWorkspace() {
       setAnalyses(current => current.filter(item => item.id !== analysis.id));
       setMessage("Analisis dihapus.");
       await refreshProjects();
-      if (expandedProjectId === projectId) setAnalyses(await api(`/api/workbook?view=analyses&projectId=${projectId}`));
+      const epoch = workspaceEpoch.current;
+      const items = await api<AnalysisListItem[]>(`/api/workbook?view=analyses&projectId=${projectId}`);
+      if (workspaceEpoch.current === epoch && locationRef.current.projectId === projectId) setAnalyses(items);
     });
   }
   function confirmRemoveProject() {
@@ -155,34 +240,48 @@ export function ProcurementWorkspace() {
     setProjectToDelete(null);
     void task(async () => {
       await api("/api/workbook", { method: "DELETE", body: JSON.stringify({ operation: "DELETE_PROJECT", projectId: project.id }) });
-      setProjects(current => current.filter(item => item.id !== project.id));
-      if (expandedProjectId === project.id) { setExpandedProjectId(null); setAnalyses([]); }
+      projectsRef.current = projectsRef.current.filter(item => item.id !== project.id); setProjects(projectsRef.current);
+      if (locationRef.current.projectId === project.id) {
+        clearWorksheet(); setAnalyses([]);
+        writeLocation({ ...locationRef.current, projectId: null, analysisId: null }, "replace");
+      }
       setMessage("Proyek dihapus.");
     });
   }
   function showProjectList() {
-    if (dirty && !window.confirm("Kembali ke daftar proyek dan buang draft yang belum disimpan?")) return;
-    workspaceEpoch.current++;
-    const projectId = snapshotRef.current?.projectId ?? null;
-    snapshotRef.current = null; configurationRef.current = null; setSnapshot(null); savedVersion.current = null; setConfiguration(null);
-    setDirty(false); setNewWorkbookProjectId(null); pendingSave.current = null; window.history.replaceState(null, "", "/");
-    if (projectId) void task(async () => { setExpandedProjectId(projectId); setAnalyses(await api(`/api/workbook?view=analyses&projectId=${projectId}`)); setMessage("Daftar proyek."); });
-    else setMessage("Daftar proyek.");
+    navigate({ ...locationRef.current, projectId: null, analysisId: null });
   }
-  async function task(action: () => void | Promise<void>, isSave = false) {
+  function returnToProject() {
+    const projectId = snapshotRef.current?.projectId;
+    navigate({ ...locationRef.current, projectId: projectId && projectsRef.current.some(project => project.id === projectId) ? projectId : null, analysisId: null });
+  }
+  function logout(discardDraft = false) {
+    if (dirty && !discardDraft) {
+      setConfirmation({ eyebrow: "Keluar", title: "Buang draft yang belum disimpan?", description: "Perubahan yang belum disimpan akan hilang ketika Anda keluar dari workspace.", confirmLabel: "Keluar", onConfirm: () => logout(true) });
+      return;
+    }
+    void task(async () => { invalidateSessionRequests(); workspaceEpoch.current++; await api("/api/session", { method: "DELETE" }, false); setActor(null); clearWorksheet(); setProjects([]); projectsRef.current = []; setAnalyses([]);
+      sessionChannel.current?.postMessage({ actorId: null }); lastActor.current = null; workspaceEpoch.current++;
+      writeLocation(readProjectLocation(""), "replace"); setMessage("Berhasil keluar."); });
+  }
+  const task = useCallback(async (action: () => void | Promise<void>, isSave = false) => {
+    const sequence = ++taskSequence.current;
     setBusy(true); setSaving(isSave); setError(""); setMessage("Memproses…");
     try { await action(); }
     catch (cause) {
+      if (sequence !== taskSequence.current) return;
       if (cause instanceof ApiError && cause.code === "SESSION_CHANGED") return;
       if (cause instanceof ApiError && cause.code === "UNAUTHENTICATED") {
         requireLogin("Sesi berakhir. Silakan masuk kembali."); return;
       }
       setError(cause instanceof Error ? cause.message : "Operasi gagal."); setMessage("");
-    } finally { setBusy(false); setSaving(false); }
-  }
+    } finally { if (sequence === taskSequence.current) { setBusy(false); setSaving(false); } }
+  }, [requireLogin]);
   useEffect(() => {
     let active = true, epoch = workspaceEpoch.current;
     const current = () => active && workspaceEpoch.current === epoch;
+    historyIndex.current = window.history.state?.procurementIndex ?? 0;
+    window.history.replaceState({ ...window.history.state, procurementIndex: historyIndex.current }, "", window.location.href);
     void (async () => {
       try {
         const session = await readSession();
@@ -190,12 +289,9 @@ export function ProcurementWorkspace() {
         if (!session.actorId) { requireLogin("Silakan masuk."); return; }
         lastActor.current = session.actorId; setActor(session.actorId); await refreshProjects();
         if (!current()) return;
-        const selected = new URLSearchParams(window.location.search).get("analysisId");
-        if (selected) {
-          const loading = load(parseStableId<"analysis">(selected));
-          epoch = workspaceEpoch.current;
-          await loading;
-        }
+        const loading = restoreLocation(readProjectLocation(window.location.search));
+        epoch = workspaceEpoch.current;
+        await loading;
         if (current()) setMessage("Siap.");
       } catch (cause) {
         if (current()) {
@@ -207,7 +303,29 @@ export function ProcurementWorkspace() {
       } finally { if (current()) setBusy(false); }
     })();
     return () => { active = false; };
-  }, [load, refreshProjects, requireLogin]);
+  }, [restoreLocation, refreshProjects, requireLogin]);
+  useEffect(() => {
+    if (!actor) return;
+    const onPopState = (event: PopStateEvent) => {
+      if (restoringHistory.current) {
+        const afterRestore = restoringHistory.current; restoringHistory.current = null;
+        afterRestore(); return;
+      }
+      const next = readProjectLocation(window.location.search);
+      const targetIndex = typeof event.state?.procurementIndex === "number" ? event.state.procurementIndex : historyIndex.current - 1;
+      const delta = historyIndex.current - targetIndex;
+      const leavingDraft = dirty && snapshotRef.current && next.analysisId !== snapshotRef.current.analysisId;
+      if (leavingDraft && !acceptHistory.current && delta) {
+        // Restore the actual history position before asking, so Cancel preserves Forward/Back.
+        restoringHistory.current = () => setConfirmation({ eyebrow: "Pindah halaman", title: "Buang draft yang belum disimpan?", description: "Perubahan pada analisis ini belum disimpan dan akan hilang jika Anda meninggalkan worksheet.", confirmLabel: "Lanjutkan", onConfirm: () => { acceptHistory.current = true; window.history.go(-delta); } });
+        window.history.go(delta); return;
+      }
+      acceptHistory.current = false; historyIndex.current = targetIndex;
+      void task(() => restoreLocation(next));
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [actor, dirty, restoreLocation, task]);
   useEffect(() => {
     const channel = new BroadcastChannel("procurement-session"); sessionChannel.current = channel;
     channel.onmessage = event => {
@@ -229,7 +347,9 @@ export function ProcurementWorkspace() {
     s = refreshCurrentOffers(s);
     if (actor) s = prepareSelectedVendorMappings(s, actor);
     config = s.workbook ? s.workbook.configuration : legacyConfiguration(s, config);
-    configurationRef.current = config; snapshotRef.current = s; setSnapshot(s); setConfiguration(config); setDirty(true); pendingSave.current = null; setError(""); setMessage("Perubahan belum disimpan.");
+    configurationRef.current = config; snapshotRef.current = s; setSnapshot(s); setConfiguration(config);
+    setDirty(!savedSnapshotRef.current || canonicalJson(s) !== canonicalJson(savedSnapshotRef.current));
+    pendingSave.current = null; setError(""); setMessage("Perubahan belum disimpan.");
   }
   function mutate(action: () => void) { try { action(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Input tidak valid."); } }
   useEffect(() => {
@@ -280,28 +400,34 @@ export function ProcurementWorkspace() {
     if (workspaceEpoch.current !== epoch || lastActor.current !== actorId || snapshotRef.current?.analysisId !== current.analysisId) return;
     pendingSave.current = null;
     savedVersion.current = outcome.workbook.version;
+    savedSnapshotRef.current = outcome.workbook.snapshot;
     if (snapshotRef.current.id === current.id) { snapshotRef.current = outcome.workbook.snapshot; setSnapshot(outcome.workbook.snapshot); configurationRef.current = outcome.workbook.configuration; setConfiguration(outcome.workbook.configuration); setDirty(false); }
-    setProjects(prior => prior.some(project => project.id === current.projectId) ? prior : [...prior, { id: current.projectId, name: current.project.name }]);
-    setAnalyses(prior => prior.map(analysis => analysis.id === current.analysisId ? { ...analysis, name: current.analysis.analysis.name } : analysis));
-    window.history.replaceState(null, "", "?analysisId=" + current.analysisId);
+    if (!projectsRef.current.some(project => project.id === current.projectId)) projectsRef.current = [...projectsRef.current, { id: current.projectId, name: current.project.name }];
+    setProjects(projectsRef.current);
+    setAnalyses(prior => prior.some(analysis => analysis.id === current.analysisId)
+      ? prior.map(analysis => analysis.id === current.analysisId ? { ...analysis, name: current.analysis.analysis.name } : analysis)
+      : [...prior, { id: current.analysisId, name: current.analysis.analysis.name, project_id: current.projectId, status: "DRAFT", period: analysisPeriod(newAnalysisDate) || null }]);
+    writeLocation({ ...locationRef.current, projectId: current.projectId, analysisId: current.analysisId }, "replace");
     setMessage("Tersimpan.");
   }
+
+  const selectedProject = projects.find(project => project.id === location.projectId);
+  const visibleProjects = projects.filter(project => matchesName(project.name, location.projectQuery));
+  const visibleAnalyses = analyses.map((analysis, index) => ({ ...analysis, number: index + 1 })).filter(analysis => matchesAnalysis(analysis, location));
+  const periods = [...new Set(analyses.flatMap(analysis => analysis.period ? [analysis.period] : []))];
+  if (location.period && location.period !== "NONE" && !periods.includes(location.period)) periods.push(location.period);
+  const hasFilters = location.projectId ? Boolean(location.analysisQuery || location.status || location.period) : Boolean(location.projectQuery);
 
   return <main className={actor ? "workbook-app" : "login-app"}>
     <header className="app-header">
       <div className="app-brand"><Image src="/image.png" width={38} height={39} alt="" priority />
-        <div><h1>Sistem Evaluasi Vendor</h1>{snapshot && <span>{snapshot.project.name}</span>}</div>
+        <div><h1>Sistem Evaluasi Vendor</h1>{(snapshot || selectedProject) && <span>{snapshot?.project.name ?? selectedProject?.name}</span>}</div>
       </div>
       {actor && <nav className="app-actions" aria-label="Tindakan workspace">
         {dirty && <span className="unsaved-state">Belum disimpan</span>}
-        {snapshot && <button type="button" onClick={showProjectList}>Daftar proyek</button>}
-        {snapshot && <button aria-label="Simpan workbook" aria-busy={saving} disabled={busy} onClick={() => void task(() => save(), true)}>{saving ? "Menyimpan…" : "Simpan"}</button>}
-        <button disabled={busy} onClick={() => {
-          if (dirty && !window.confirm("Keluar akan membuang draft yang belum disimpan. Lanjutkan?")) return;
-          void task(async () => { invalidateSessionRequests(); workspaceEpoch.current++; await api("/api/session", { method: "DELETE" }, false); setActor(null); snapshotRef.current = null; setSnapshot(null); setProjects([]); setAnalyses([]); setExpandedProjectId(null);
-            sessionChannel.current?.postMessage({ actorId: null }); lastActor.current = null; workspaceEpoch.current++;
-            configurationRef.current = null; setConfiguration(null); setDirty(false); pendingSave.current = null; window.history.replaceState(null, "", "/"); setMessage("Berhasil keluar."); });
-        }}>Keluar</button>
+        {snapshot && <button type="button" aria-label="Kembali ke proyek" title="Kembali ke proyek" disabled={busy} onClick={returnToProject}><ArrowLeft aria-hidden="true" /></button>}
+        {snapshot && <button type="button" aria-label={saving ? "Menyimpan workbook" : "Simpan workbook"} title={saving ? "Menyimpan…" : "Simpan"} aria-busy={saving} disabled={busy} onClick={() => void task(() => save(), true)}><Save aria-hidden="true" /></button>}
+        <button type="button" aria-label="Keluar" title="Keluar" disabled={busy} onClick={() => logout()}><LogOut aria-hidden="true" /></button>
       </nav>}
     </header>
     <div className="operation-status" role="status" aria-label="Status operasi" aria-live="polite">{busy || preparingPrint ? loadingLabel : message}</div>
@@ -314,8 +440,8 @@ export function ProcurementWorkspace() {
         const session = await api<{ actorId: StableId<"user"> }>("/api/session", { method: "POST", body: JSON.stringify({ operation: "LOGIN", email: field(form, "email"), password: String(form.get("password")) }) }, false);
         if (lastActor.current !== session.actorId) {
           workspaceEpoch.current++;
-          snapshotRef.current = null; configurationRef.current = null; setSnapshot(null); setConfiguration(null); savedVersion.current = null; setDirty(false); pendingSave.current = null;
-          setProjects([]); setAnalyses([]); setExpandedProjectId(null); window.history.replaceState(null, "", "/");
+          snapshotRef.current = null; savedSnapshotRef.current = null; configurationRef.current = null; setSnapshot(null); setConfiguration(null); savedVersion.current = null; setDirty(false); pendingSave.current = null;
+          setProjects([]); projectsRef.current = []; setAnalyses([]); writeLocation(readProjectLocation(""), "replace");
         }
         lastActor.current = session.actorId; setActor(session.actorId); sessionChannel.current?.postMessage({ actorId: session.actorId });
         element.reset(); await refreshProjects(); setMessage("Berhasil masuk.");
@@ -324,9 +450,23 @@ export function ProcurementWorkspace() {
     : <>
       {!snapshot ? <section className="project-index" aria-labelledby="project-index-title">
         <header className="project-index-heading">
-          <div><p className="eyebrow">DAFTAR PEKERJAAN</p><h2 id="project-index-title">Proyek berjalan</h2><p>Setiap proyek berisi satu atau beberapa analisis (lembar evaluasi).</p></div>
-          <button type="button" disabled={busy} onClick={() => showAnalysisForm("")}>＋ Proyek baru</button>
+          <div>
+            {location.projectId && <button type="button" className="project-back" disabled={busy} onClick={showProjectList}><ArrowLeft aria-hidden="true" /> Semua proyek</button>}
+            <p className="eyebrow">{location.projectId ? "DAFTAR ANALISIS" : "DAFTAR PEKERJAAN"}</p>
+            <h2 id="project-index-title">{location.projectId ? selectedProject?.name ?? "Proyek tidak tersedia" : "Proyek berjalan"}</h2>
+            <p>{location.projectId ? "Pilih analisis untuk membuka lembar perhitungan." : "Pilih proyek untuk melihat daftar analisis."}</p>
+          </div>
+          {(!location.projectId || selectedProject) && <button type="button" disabled={busy} onClick={() => showAnalysisForm(selectedProject?.id ?? "")}>{selectedProject ? "＋ Tambah analisis" : "＋ Proyek baru"}</button>}
         </header>
+        {(!location.projectId || selectedProject) && <div className="project-filters" role="search" aria-label={location.projectId ? "Filter analisis" : "Cari proyek"}>
+          <label className="project-search"><Search aria-hidden="true" /><input type="search" aria-label={location.projectId ? "Cari analisis" : "Cari proyek"} placeholder={location.projectId ? "Cari analisis…" : "Cari proyek…"} value={location.projectId ? location.analysisQuery : location.projectQuery} disabled={busy} onChange={event => updateFilters(location.projectId ? { analysisQuery: event.target.value } : { projectQuery: event.target.value })} /></label>
+          {location.projectId && <>
+            <select aria-label="Filter status analisis" value={location.status} disabled={busy} onChange={event => updateFilters({ status: event.target.value as AnalysisStatus | "" })}><option value="">Semua status</option>{ANALYSIS_STATUSES.map(status => <option key={status} value={status}>{analysisStatusLabel[status]}</option>)}</select>
+            <select aria-label="Filter periode analisis" value={location.period} disabled={busy} onChange={event => updateFilters({ period: event.target.value })}><option value="">Semua periode</option>{periods.map(period => <option key={period} value={period}>{period}</option>)}<option value="NONE">Tanpa periode</option></select>
+          </>}
+          {hasFilters && <button type="button" disabled={busy} onClick={() => updateFilters(location.projectId ? { analysisQuery: "", status: "", period: "" } : { projectQuery: "" })}>Reset filter</button>}
+          <span className="project-result-count" aria-live="polite">{location.projectId ? `${visibleAnalyses.length} dari ${analyses.length} analisis` : `${visibleProjects.length} dari ${projects.length} proyek`}</span>
+        </div>}
         {newWorkbookProjectId !== null && <form key={newWorkbookProjectId} id="project-create-form" className="project-create-form" onSubmit={event => {
           const form = submit(event);
           mutate(() => {
@@ -342,7 +482,7 @@ export function ProcurementWorkspace() {
             });
             edit(next, null);
             savedVersion.current = null; setNewWorkbookProjectId(null);
-            window.history.replaceState(null, "", "/");
+            writeLocation({ ...locationRef.current, projectId: existing?.id ?? null, analysisId: null });
           });
         }}>
           <CardHeader className="project-create-heading">
@@ -380,15 +520,28 @@ export function ProcurementWorkspace() {
             <button type="button" className="project-create-cancel" disabled={busy} onClick={() => setNewWorkbookProjectId(null)}>Batal</button>
           </CardFooter>
         </form>}
-        {projects.length ? <ol className="project-list">
-          {projects.map((project, index) => {
-            const expanded = expandedProjectId === project.id;
-            return <li key={project.id} className={expanded ? "project-row is-open" : "project-row"}>
+        {location.projectId ? selectedProject ? <div className="project-analysis-list" aria-label={`Lembar perhitungan ${selectedProject.name}`}>
+          {visibleAnalyses.length ? visibleAnalyses.map(analysis => <div className="analysis-row" key={analysis.id}>
+            <span className="analysis-number" aria-label={`Nomor analisis ${analysis.number}`}>{String(analysis.number).padStart(2, "0")}</span>
+            <div className="analysis-summary">
+              <button type="button" className="analysis-name analysis-name-link" aria-label={`Masuk ke ${analysis.name}`} disabled={busy} onClick={() => openAnalysis(analysis.id)}>{analysis.name}</button>
+              <span className="analysis-meta"><span className="analysis-period" aria-label={`Periode ${analysis.period ?? "belum tersedia"}`}>{analysis.period ?? "Tanpa periode"}</span><span className={`analysis-status analysis-status-${analysis.status.toLowerCase()}`}>{analysisStatusLabel[analysis.status]}</span></span>
+            </div>
+            <span className="analysis-actions">
+              <button type="button" className="analysis-enter" aria-label={`Masuk ke ${analysis.name}`} title="Masuk" disabled={busy} onClick={() => openAnalysis(analysis.id)}><LogIn aria-hidden="true" /></button>
+              <button type="button" className="analysis-edit" aria-label={`Edit ${analysis.name}`} title="Edit analisis" disabled={busy} onClick={() => setAnalysisToEdit(analysis)}><Pencil aria-hidden="true" /></button>
+              <button type="button" className="analysis-delete" aria-label={`Hapus ${analysis.name}`} title="Hapus" disabled={busy} onClick={() => removeAnalysis(selectedProject.id, analysis)}><Trash2 aria-hidden="true" /></button>
+            </span>
+          </div>) : <div className="project-empty"><p>{analyses.length ? "Tidak ada analisis yang sesuai filter." : "Belum ada analisis dalam proyek ini."}</p></div>}
+        </div> : <div className="project-empty"><p>Proyek tidak ditemukan atau tidak dapat diakses.</p><button type="button" disabled={busy} onClick={showProjectList}>Kembali ke daftar proyek</button></div>
+        : visibleProjects.length ? <ol className="project-list">
+          {visibleProjects.map((project, index) => {
+            return <li key={project.id} className="project-row">
               <div className="project-row-header">
-                <button type="button" className="project-row-button" aria-expanded={expanded}
+                <button type="button" className="project-row-button" disabled={busy}
                   onClick={() => {
                     if (suppressProjectClick.current) { suppressProjectClick.current = false; return; }
-                    void task(() => showProject(project.id));
+                    showProject(project.id);
                   }}
                   onContextMenu={event => { event.preventDefault(); openProjectContextMenu(project, event.clientX, event.clientY); }}
                   onPointerDown={event => handleProjectPointerDown(project, event)}
@@ -396,22 +549,12 @@ export function ProcurementWorkspace() {
                   onPointerCancel={handleProjectPointerUp}>
                   <span className="project-number">{String(index + 1).padStart(2, "0")}</span>
                   <span className="project-name">{project.name}</span>
-                  <span className="project-action" aria-hidden="true">{expanded ? <ChevronUp /> : <ChevronDown />}</span>
+                  <span className="project-action" aria-hidden="true"><ChevronRight /></span>
                 </button>
               </div>
-              {expanded && <div className="analysis-list" aria-label={`Lembar perhitungan ${project.name}`}>
-                {analyses.length ? analyses.map(analysis => <div className="analysis-row" key={analysis.id}>
-                  <span className="analysis-name">{analysis.name}</span>
-                  <span className="analysis-actions">
-                    <button type="button" className="analysis-enter" aria-label={`Masuk ke ${analysis.name}`} title="Masuk" disabled={busy} onClick={() => openAnalysis(analysis.id)}><LogIn aria-hidden="true" /></button>
-                    <button type="button" className="analysis-delete" aria-label={`Hapus ${analysis.name}`} title="Hapus" disabled={busy} onClick={() => removeAnalysis(project.id, analysis)}><Trash2 aria-hidden="true" /></button>
-                  </span>
-                </div>) : <p>Belum ada analisis dalam proyek ini.</p>}
-                <button type="button" className="analysis-create" disabled={busy} onClick={() => showAnalysisForm(project.id)}>＋ Tambah analisis</button>
-              </div>}
             </li>;
           })}
-        </ol> : <div className="project-empty"><p>Belum ada proyek tersimpan.</p><button type="button" disabled={busy} onClick={() => showAnalysisForm("")}>Buat proyek pertama</button></div>}
+        </ol> : <div className="project-empty"><p>{projects.length ? "Tidak ada proyek yang sesuai pencarian." : "Belum ada proyek tersimpan."}</p>{!projects.length && <button type="button" disabled={busy} onClick={() => showAnalysisForm("")}>Buat proyek pertama</button>}</div>}
       </section> : <WorksheetSurface
         snapshot={snapshot}
         configuration={configuration}
@@ -430,6 +573,9 @@ export function ProcurementWorkspace() {
         onError={setError}
         onEditing={() => { setDirty(true); pendingSave.current = null; }}
         onSave={() => void task(() => save(), true)}
+        analysisStatus={analyses.find(analysis => analysis.id === snapshot.analysisId)?.status}
+        onAnalysisStatusChange={updateActiveAnalysisStatus}
+        onRequestConfirm={(title, description, onConfirm) => setConfirmation({ eyebrow: "Konfirmasi", title, description, onConfirm })}
         onSelectOffer={(selectionId, vendorName) => { if (snapshot && actor) mutate(() => {
           const next = selectSheetOffer(snapshot, parseStableId<"offer">(selectionId), actor);
           const source = next.worksheets.find(w => w.stage === "AHS")?.tables.flatMap(t => t.cells.map(cell => ({ cell, label: t.rows.find(row => row.id === cell.rowId)?.label }))).find(field =>
@@ -442,7 +588,7 @@ export function ProcurementWorkspace() {
           else edit(appendField(snapshot, stage, kind === "TEXT" && stage === "EVALUASI_VENDOR" ? "SHARED" : snapshot.activeProfile, label, input).snapshot);
         }); }}
       />}
-      {snapshot && <div className="sheet-caption">{snapshot.analysis.analysis.name} · Preview NONFINAL{preview?.run?.provisional?.status === "ERROR" ? " · ERROR" : ""}</div>}
+      {snapshot && <div className="sheet-caption">{snapshot.analysis.analysis.name}{preview?.run?.provisional?.status === "ERROR" ? " · ERROR" : ""}</div>}
       {analysisToDelete && <div className="analysis-delete-overlay" role="presentation" onClick={() => setAnalysisToDelete(null)}>
         <section className="analysis-delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby="analysis-delete-title" aria-describedby="analysis-delete-description" onClick={event => event.stopPropagation()}>
           <div className="analysis-delete-icon" aria-hidden="true"><AlertTriangle /></div>
@@ -478,6 +624,20 @@ export function ProcurementWorkspace() {
           </button>
         </div>
       </div>}
+      {analysisToEdit && <div className="analysis-delete-overlay" role="presentation" onClick={() => setAnalysisToEdit(null)}>
+        <section className="analysis-edit-dialog" role="dialog" aria-modal="true" aria-labelledby="analysis-edit-title" onClick={event => event.stopPropagation()}>
+          <div className="analysis-delete-content">
+            <p className="analysis-delete-eyebrow">Edit analisis</p>
+            <h2 id="analysis-edit-title">Pengaturan analisis</h2>
+            <form className="analysis-edit-form" onSubmit={updateAnalysisMetadata}>
+              <label><span>Nama analisis</span><input name="analysisName" defaultValue={analysisToEdit.name} required autoFocus /></label>
+              <label><span>Status</span><select name="analysisStatus" defaultValue={analysisToEdit.status}>{ANALYSIS_STATUSES.map(status => <option key={status} value={status}>{analysisStatusLabel[status]}</option>)}</select></label>
+              <div className="analysis-delete-actions"><button type="button" className="analysis-delete-cancel" onClick={() => setAnalysisToEdit(null)}>Batal</button><button type="submit" className="analysis-delete-confirm" disabled={busy}>Simpan</button></div>
+            </form>
+          </div>
+        </section>
+      </div>}
+      {confirmation && <ConfirmationDialog {...confirmation} onConfirm={() => { const action = confirmation.onConfirm; setConfirmation(null); action(); }} onCancel={() => setConfirmation(null)} />}
     </>}
   </main>;
 }

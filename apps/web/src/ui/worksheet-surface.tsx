@@ -5,6 +5,8 @@ import type { CSSProperties, FormEvent, MouseEvent, PointerEvent, ReactNode } fr
 import type { AhsSection, CellSnapshot, TableSnapshot, WorkbookSnapshot, WorksheetSnapshot } from "../domain/contracts.ts";
 import type { Profile } from "../domain/profiles.ts";
 import type { StableId } from "../domain/ids.ts";
+import { ANALYSIS_STATUSES, analysisStatusLabel } from "../domain/analysis-status.ts";
+import type { AnalysisStatus } from "../domain/analysis-status.ts";
 import { createStableId as id, parseStableId } from "../domain/ids.ts";
 import type { EngineConfiguration, EngineRun } from "../engine/contracts.ts";
 import { buildSheetGrid, sheetNumber, sheetNumberFixed, sheetPercent } from "./sheet-grid.ts";
@@ -41,6 +43,9 @@ interface SurfaceProps {
   onError?: (error: string) => void;
   onEditing?: () => void;
   onSave?: () => void;
+  analysisStatus?: AnalysisStatus | undefined;
+  onAnalysisStatusChange?: (status: AnalysisStatus) => void;
+  onRequestConfirm?: (title: string, description: string, onConfirm: () => void) => void;
   onInput?: (stage: Stage, label: string, value: string, kind: "TEXT" | "NUMERIC_TEXT", cell: CellSnapshot | undefined) => void;
   onSelectOffer?: (selectionId: string, vendorName: string) => void;
 }
@@ -50,7 +55,7 @@ const normalized = (text: string) => text.trim().toLocaleLowerCase("id-ID");
 const numericText = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
 
 export function WorksheetSurface(props: SurfaceProps) {
-  const { snapshot, run, configuration, disabled, saving = false, onPrintLoading, volumeError, actor, onChange, onError, onEditing, onSave, onInput, onSelectOffer } = props;
+  const { snapshot, run, configuration, disabled, saving = false, onPrintLoading, volumeError, actor, onChange, onError, onEditing, onSave, analysisStatus, onAnalysisStatusChange, onInput, onSelectOffer, onRequestConfirm } = props;
 
   const [selectedCellId, setSelectedCellId] = useState<string | null>(null);
   const [formulaExpression, setFormulaExpression] = useState("");
@@ -353,7 +358,7 @@ export function WorksheetSurface(props: SurfaceProps) {
       const section = ahsSectionOfCell(snapshot, selectedCell);
       const field = snapshot.ahsFields?.find(f => f.profile === snapshot.activeProfile && ahsCell(snapshot, f.valueCellId)?.rowId === selectedCell.rowId);
       if (field && configuration) {
-        if (window.confirm(`Hapus uraian “${ahsLabel(snapshot, field)}” beserta nilainya?`)) apply(() => removeAhsField(snapshot, field.valueCellId, configuration));
+        onRequestConfirm?.("Hapus uraian", `Hapus uraian “${ahsLabel(snapshot, field)}” beserta nilainya?`, () => apply(() => removeAhsField(snapshot, field.valueCellId, configuration)));
         return;
       }
       const group = (section === "PENDAPATAN" || section === "BIAYA" ? ahsGroups(snapshot, snapshot.activeProfile, section) : []).find(g => g.items.some(item => ahsCell(snapshot, item.priceCellId)?.rowId === selectedCell.rowId ||
@@ -361,7 +366,7 @@ export function WorksheetSurface(props: SurfaceProps) {
       const item = group?.items.find(item => ahsCell(snapshot, item.priceCellId)?.rowId === selectedCell.rowId ||
         [item.priceCellId, item.volumeCellId, item.totalCellId].includes(selectedCell.id));
       if (!group || !item || !configuration) { setToolbarError("Baris inti AHS tidak dapat dihapus."); return; }
-      if (window.confirm(`Hapus uraian “${ahsLabel(snapshot, item)}” beserta nilainya?`)) apply(() => removeAhsEntry(snapshot, group.id, item.priceCellId, configuration, section === "PENDAPATAN" ? section : "BIAYA"));
+      onRequestConfirm?.("Hapus uraian", `Hapus uraian “${ahsLabel(snapshot, item)}” beserta nilainya?`, () => apply(() => removeAhsEntry(snapshot, group.id, item.priceCellId, configuration, section === "PENDAPATAN" ? section : "BIAYA")));
       return;
     }
     apply(() => removeRow(snapshot, selectedTable.id, selectedCell.rowId));
@@ -855,7 +860,7 @@ export function WorksheetSurface(props: SurfaceProps) {
           <header className="sheet-overview">
             <div><p className="eyebrow">PROCUREMENT WORKSPACE · {isINU ? "INU" : "SOLAR BAWAH"}</p>
               <h2>Evaluasi Vendor & Analisis Harga Satuan</h2>
-              <p>{snapshot.project.name} / {snapshot.analysis.analysis.name} · {run?.provisional?.status ?? run?.status ?? "Belum dikonfigurasi"} · Hasil sementara, bukan hasil bisnis final</p></div>
+              <p>{snapshot.project.name} / {snapshot.analysis.analysis.name}</p></div>
             <dl className="metrics">
               <div><dt>Volume (L)</dt><dd>{overviewValue("volume")}</dd></div>
               <div><dt>Harga jual (Rp/L)</dt><dd>{overviewValue("sale")}</dd></div>
@@ -863,7 +868,7 @@ export function WorksheetSurface(props: SurfaceProps) {
             </dl>
             <button type="button" className="print-button" disabled={disabled || isPreparingPrint} onClick={() => void handlePrint()}>{isPreparingPrint ? "Menyiapkan…" : "Cetak ke PDF"}</button>
           </header>
-          {run?.provisional && <p className="sheet-assumptions">NONFINAL · Asumsi nol sementara: {run.provisional.assumedZeroCellIds.length
+          {run?.provisional && <p className="sheet-assumptions">Asumsi nol sementara: {run.provisional.assumedZeroCellIds.length
             ? run.provisional.assumedZeroCellIds.map(id => displayCellId(id, snapshot)).join(", ") : "tidak ada"}. Sel asli tetap kosong.</p>}
           {/* 1. Unified Formula Bar & Table Actions Toolbar */}
           <div className="sheet-canvas-toolbar">
@@ -1078,8 +1083,9 @@ export function WorksheetSurface(props: SurfaceProps) {
         <header className="sheet-overview">
           <div><p className="eyebrow">PROCUREMENT WORKSPACE · {isINU ? "INU" : "SOLAR BAWAH"}</p>
             <h2>Evaluasi Vendor &amp; Analisis Harga Satuan</h2>
-            <p>{snapshot.project.name} / {snapshot.analysis.analysis.name} · {run?.provisional?.status ?? run?.status ?? "Belum dikonfigurasi"} · Hasil sementara, bukan hasil bisnis final</p></div>
+            <p>{snapshot.project.name} / {snapshot.analysis.analysis.name}</p></div>
           <dl className="metrics">
+            {analysisStatus && onAnalysisStatusChange && <div><dt>Status</dt><dd><select aria-label="Status analisis" value={analysisStatus} disabled={disabled} onChange={event => onAnalysisStatusChange(event.currentTarget.value as AnalysisStatus)}>{ANALYSIS_STATUSES.map(status => <option key={status} value={status}>{analysisStatusLabel[status]}</option>)}</select></dd></div>}
             <div><dt>Volume (L)</dt><dd>{legacyOverviewValue("AHS", "Harga Jual · Harga Dasar · Volume")}</dd></div>
             <div><dt>Harga jual (Rp/L)</dt><dd>{legacyOverviewValue("AHS", "Harga Jual · Harga Dasar")}</dd></div>
             <div><dt>Laba bersih (Rp)</dt><dd>{legacyOverviewValue("AHS", "LABA BERSIH")}</dd></div>

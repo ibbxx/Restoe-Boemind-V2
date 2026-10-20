@@ -167,6 +167,10 @@ test("current-only migration, repeated Save, isolation and AHS round trips", asy
       const s = currentSnapshot(prepareVendorColumns(createProcurementWorkbook(dynamic.project.name, "Second", dynamic.projectId)));
       const outcome = await repo.save({ snapshot: s, configuration: s.workbook!.configuration, expectedVersion: null, mutationId: id<"mutation">() }, actor);
       assert.equal(outcome.status, "SAVED"); assert.equal((await repo.listAnalyses(dynamic.projectId)).length, 2);
+      const updated = await repo.updateAnalysis(s.analysisId, actor, "Second renamed", "HOLD");
+      assert.deepEqual(updated, { id: s.analysisId, name: "Second renamed", status: "HOLD" });
+      const listed = await repo.listAnalyses(dynamic.projectId);
+      assert.deepEqual(listed.find(item => item.id === s.analysisId), { id: s.analysisId, name: "Second renamed", project_id: dynamic.projectId, status: "HOLD", period: null });
       assert.equal((await repo.current(dynamic.analysisId))!.snapshot.analysis.analysis.name, "Dynamic");
     });
     await t.test("simultaneous Saves accept one writer and preserve the latest committed data", async () => {

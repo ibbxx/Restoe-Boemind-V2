@@ -5,7 +5,7 @@ import { object, requireCondition } from "../domain/validation.ts";
 import type { SessionAuthenticator } from "./supabase-auth.ts";
 import { AuthenticationError, ServiceUnavailableError } from "./supabase-auth.ts";
 
-type Repository = Pick<PostgresWorkbookRepository, "save" | "current" | "listProjects" | "listAnalyses" | "deleteAnalysis" | "deleteProject"> & { readonly timings?: Readonly<Record<string, number>> };
+type Repository = Pick<PostgresWorkbookRepository, "save" | "current" | "listProjects" | "listAnalyses" | "deleteAnalysis" | "deleteProject" | "updateAnalysis"> & { readonly timings?: Readonly<Record<string, number>> };
 type RepositoryFactory = (actorId: Awaited<ReturnType<SessionAuthenticator["authenticate"]>>) => Repository;
 const MAX_BODY = 5 * 1024 * 1024;
 class PayloadTooLargeError extends Error {}
@@ -67,7 +67,13 @@ export function createWorkbookHandler(auth: SessionAuthenticator, factory: Repos
         const command = object(raw, ["operation", "projectId"]);
         return respond(await repository.deleteProject(command.projectId, actorId));
       }
-      const command = object(await body(request), ["operation", "request"]);
+      const raw = await body(request);
+      requireCondition(raw !== null && typeof raw === "object" && !Array.isArray(raw), "Expected an object.");
+      if ((raw as Record<string, unknown>).operation === "UPDATE_ANALYSIS") {
+        const command = object(raw, ["operation", "analysisId", "name", "status"]);
+        return respond(await repository.updateAnalysis(command.analysisId, actorId, command.name, command.status));
+      }
+      const command = object(raw, ["operation", "request"]);
       requireCondition(command.operation === "SAVE", "Unknown operation.");
       const outcome = await repository.save(command.request, actorId);
       return respond(outcome, outcome.status === "SAVED" ? 200 : outcome.status === "CONFLICT" ? 409 : 400);

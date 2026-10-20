@@ -36,7 +36,7 @@ export async function enterRuntimeRole(tx: postgres.TransactionSql): Promise<voi
   ), objects as (
     select c.*, n.nspname from pg_class c join pg_namespace n on n.oid = c.relnamespace
     where n.nspname = 'procurement' and c.relkind in ('r','p','v','m','f','S')
-  ), updates(table_name, column_name) as (values ('projects','name'),('analyses','name'),
+  ), updates(table_name, column_name) as (values ('projects','name'),('analyses','name'),('analyses','status'),
     ('current_workbooks','data'),('current_workbooks','version'),
     ('current_workbooks','saved_at'),('current_workbooks','saved_by'),('current_workbooks','mutation_id'),('current_workbooks','request_signature'))
   select current_user = 'procurement_runtime' and current_setting('row_security') = 'on'

@@ -8,6 +8,9 @@ import { captureSavedWorkbook, parseSaveRequest, planSave } from "./current-work
 import type { CurrentRecord } from "./current-workbook.ts";
 import { enterRuntimeRole } from "./runtime-role.ts";
 import { encodeWorkbook, decodeWorkbook } from "./workbook-data.ts";
+import { analysisPeriod } from "../domain/analysis-creation.ts";
+import { ANALYSIS_STATUSES } from "../domain/analysis-status.ts";
+import type { AnalysisStatus } from "../domain/analysis-status.ts";
 
 type Tx = postgres.TransactionSql;
 type CurrentRow = { data: unknown; version: string; analysis_name: string; project_name: string;
@@ -53,8 +56,36 @@ export class PostgresWorkbookRepository {
   }
   async listAnalyses(projectId: unknown) {
     const id = parseStableId<"project">(projectId);
-    return this.transaction(async tx => freeze([...(await tx<{ id: string; name: string; project_id: string }[]>`
-      select id, name, project_id from procurement.analyses where project_id = ${id} order by id`)]));
+    return this.transaction(async tx => freeze((await tx<{ id: string; name: string; project_id: string; status: AnalysisStatus; data: unknown; project_name: string }[]>`
+      select a.id, a.name, a.project_id, a.status, c.data, p.name as project_name
+      from procurement.analyses a
+      join procurement.current_workbooks c on c.analysis_id = a.id and c.owner_id = a.owner_id
+      join procurement.projects p on p.id = a.project_id and p.owner_id = a.owner_id
+      where a.project_id = ${id} order by a.id`).map(row => {
+        const decoded = decodeWorkbook(row.data, { analysisId: row.id, projectId: row.project_id, analysisName: row.name, projectName: row.project_name });
+        const date = decoded.snapshot.worksheets.find(w => w.stage === "AHS")?.tables.flatMap(t => t.cells.map(cell => ({ cell, label: t.rows.find(r => r.id === cell.rowId)?.label,
+          address: decoded.snapshot.workbook?.cells.find(presentation => presentation.cellId === cell.id)?.address }))).find(item =>
+          item.label === "Tgl Analisis (Rn)" || item.address === (item.cell.scope === "INU" ? "H4" : "H3"))?.cell;
+        const value = date?.source.kind === "INPUT" && date.source.input.kind === "TEXT" ? date.source.input.text : "";
+        const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(value);
+        const period = match ? analysisPeriod(`${match[3]}-${match[2]}-${match[1]}`) : "";
+        return { id: row.id, name: row.name, project_id: row.project_id, status: row.status, period: period || null };
+      })));
+  }
+
+  async updateAnalysis(value: unknown, actorId: unknown, name: unknown, status: unknown) {
+    const analysisId = parseStableId<"analysis">(value);
+    const actor = parseStableId<"user">(actorId);
+    requireCondition(actor === this.actorId, "Resource unavailable or access denied.");
+    requireCondition(typeof name === "string" && name.trim().length > 0, "Nama analisis wajib diisi.");
+    requireCondition(typeof status === "string" && ANALYSIS_STATUSES.includes(status as AnalysisStatus), "Status analisis tidak valid.");
+    return this.transaction(async tx => {
+      const [updated] = await tx<{ id: string; name: string; status: AnalysisStatus }[]>`
+        update procurement.analyses set name = ${name.trim()}, status = ${status}
+        where id = ${analysisId} and owner_id = ${actor} returning id, name, status`;
+      if (!updated) throw new AccessDeniedError();
+      return { ...updated };
+    });
   }
 
   async deleteAnalysis(value: unknown, actorId: unknown) {

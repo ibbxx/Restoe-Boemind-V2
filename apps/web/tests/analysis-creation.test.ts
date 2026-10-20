@@ -8,7 +8,8 @@ import { cellCodes } from "../src/domain/cell-address.ts";
 import { updateCellInput } from "../src/domain/commands.ts";
 import { canonicalJson } from "../src/domain/snapshots.ts";
 import { initializeAnalysisDate } from "../src/domain/workflow.ts";
-import { prepareLegacySheet, legacyConfiguration, connectAhsHpp, makeAhsSaleInput } from "../src/domain/legacy-sheet.ts";
+import { prepareLegacySheet, legacyConfiguration, connectAhsHpp, makeAhsSaleInput, legacyVendorCell } from "../src/domain/legacy-sheet.ts";
+import { emptyWorkbook } from "../src/domain/workflow.ts";
 import { prepareVendorColumns, prepareSelectedVendorMappings } from "../src/domain/dynamic-workflow.ts";
 import { prepareNumericBlanks } from "../src/domain/procurement-template.ts";
 import { prepareCalculationPolicy } from "../src/domain/calculation-policy.ts";
@@ -99,6 +100,15 @@ test("initial AHS volume accepts Indonesian numbers and rejects text", () => {
     }
   }
   for (const raw of ["lima puluh", "1,2,3"]) assert.throws(() => createAnalysisWorkbook({ ...input, volume: raw }), /Volume AHS wajib berupa angka/);
+});
+
+test("legacy Vendor 2 PBBKB stays manual instead of receiving the template formula", () => {
+  const s = prepareLegacySheet(emptyWorkbook("Proyek", "Analisis"));
+  const secondOffer = s.analysis.offers[1]!;
+  const pbbkb = legacyVendorCell(s, secondOffer.id, "PBBKB");
+  assert.equal(pbbkb?.source.kind, "INPUT");
+  assert.deepEqual(pbbkb?.source.kind === "INPUT" ? pbbkb.source.input : null, { kind: "UNSET" });
+  assert(!s.formulas.some(formula => formula.targetCellId === pbbkb?.id));
 });
 
 test("analyses in one project and each profile remain independent after creation", () => {
