@@ -9,6 +9,7 @@ function copyTable(source: HTMLTableElement, kind: string): HTMLTableElement {
     for (const attribute of ["style", "tabindex", "title", "data-cell-id", "data-cell-code"]) element.removeAttribute(attribute);
   });
   table.querySelectorAll(".vendor-unselected, .cell-selected").forEach(element => element.classList.remove("vendor-unselected", "cell-selected"));
+  table.querySelectorAll(".cell-reference-1, .cell-reference-2, .cell-reference-3").forEach(element => element.classList.remove("cell-reference-1", "cell-reference-2", "cell-reference-3"));
   return table;
 }
 
@@ -75,12 +76,6 @@ export async function printWorkbook(sheet: HTMLElement, vendorColumnIndexes: rea
     }
     document.body.append(host);
     await document.fonts.ready;
-    for (const page of host.querySelectorAll<HTMLElement>(".workbook-print-page")) {
-      const report = page.querySelector<HTMLElement>(".workbook-print-report")!;
-      // shortcut: tall reports shrink to one page; add vertical pagination if text becomes unreadable.
-      const scale = Math.min(1, page.clientWidth / Math.max(report.scrollWidth, 1), (page.clientHeight - report.offsetTop) / Math.max(report.scrollHeight, 1));
-      report.style.transform = `scale(${scale})`;
-    }
     window.addEventListener("afterprint", cleanup);
     previousTitle = document.title;
     document.title = title;

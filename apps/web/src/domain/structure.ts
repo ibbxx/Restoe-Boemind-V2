@@ -1,12 +1,12 @@
-import type { CellSnapshot, FormulaDefinition, ProfileSnapshot, TableMerge, TableSnapshot, WorkbookSnapshot } from "./contracts.ts";
+import type { CellInput, CellSnapshot, FormulaDefinition, ProfileSnapshot, TableMerge, TableSnapshot, WorkbookSnapshot } from "./contracts.ts";
 import type { StableId } from "./ids.ts";
 import { createStableId as id, parseStableId } from "./ids.ts";
 import type { Profile } from "./profiles.ts";
 import { PROFILES, parseProfile } from "./profiles.ts";
-import { requireCondition, parseSnapshot } from "./validation.ts";
+import { requireCondition, parseSnapshot, parseCellInput } from "./validation.ts";
 import { changeWorkbook } from "./workflow.ts";
 import { parseFormula, references } from "../engine/parser.ts";
-import { isAhsVolumeCell, requireAhsVolumeEditable } from "./ahs-volume.ts";
+import { isAhsVolumeCell, requireAhsVolumeEditable, validateAhsVolumeInput } from "./ahs-volume.ts";
 
 // Structural commands stay pure domain transitions: every call returns a new,
 // validated snapshot via `changeWorkbook`, never a mutated one.
@@ -44,6 +44,15 @@ function withIndexes(s: WorkbookSnapshot, changes: Partial<WorkbookSnapshot>): W
     formulaIds: merged.formulas.filter(f => byCell.get(f.targetCellId)?.scope === profile).map(f => f.id),
   }])) as unknown as Readonly<Record<Profile, ProfileSnapshot>>;
   return changeWorkbook(s, { ...changes, profiles });
+}
+
+function ahsNames(s: WorkbookSnapshot, target: string, name: string | null): Partial<WorkbookSnapshot> {
+  if (!name) return {};
+  return {
+    ...(s.ahsGroups ? { ahsGroups: s.ahsGroups.map(group => ({ ...group,
+      ...(group.labelCellId === target ? { name } : {}), items: group.items.map(item => item.labelCellId === target ? { ...item, name } : item) })) } : {}),
+    ...(s.ahsFields ? { ahsFields: s.ahsFields.map(field => field.labelCellId === target ? { ...field, name } : field) } : {}),
+  };
 }
 
 function mergePositions(table: TableSnapshot, merge: TableMerge): string[] {
@@ -193,7 +202,8 @@ export function setCellFormula(snapshot: unknown, cellId: unknown, expression: s
   requireCondition(cell, "Sel tidak ditemukan.");
   requireAhsVolumeEditable(s, cell);
   const vendorCell = s.worksheets.some(w => w.stage === "EVALUASI_VENDOR" && w.tables.some(t => t.id === cell.tableId));
-  requireCondition(vendorCell || !s.workbook?.cells.some(p => p.cellId === target && (p.kind === "LABEL" || (p.kind === "RESULT" && cell.source.kind !== "FORMULA"))),
+  const ahsCell = s.worksheets.some(w => w.stage === "AHS" && w.tables.some(t => t.id === cell.tableId));
+  requireCondition(vendorCell || ahsCell || !s.workbook?.cells.some(p => p.cellId === target && (p.kind === "LABEL" || (p.kind === "RESULT" && cell.source.kind !== "FORMULA"))),
     "Sel label atau hasil tidak boleh ditimpa formula.");
   requireCondition(!s.workbook?.bindings.some(b => b.cellId === target && ["cost", "supplier", "supplierName"].includes(b.key)), "Sel ini dikelola pilihan vendor atau solver.");
   requireCondition(!PROFILES.some(profile => s.profiles[profile].hppBase.cellId === target), "HPP mengikuti Biaya Konversi.");
@@ -226,17 +236,26 @@ export function setCellFormula(snapshot: unknown, cellId: unknown, expression: s
   const worksheets = s.worksheets.map(w => ({ ...w, tables: w.tables.map(t => ({ ...t,
     cells: t.cells.map(c => c.id === target ? { ...c, source: { kind: "FORMULA" as const, formulaId } } : c) })) }));
   const workbook = s.workbook ? { ...s.workbook, cells: s.workbook.cells.map(p => p.cellId === target ? { ...p, kind: "RESULT" as const } : p) } : undefined;
-  return withIndexes(s, { worksheets, formulas, ...(workbook ? { workbook } : {}) });
+  return withIndexes(s, { worksheets, formulas, ...(workbook ? { workbook } : {}),
+    ...ahsNames(s, target, cell.source.kind === "INPUT" && cell.source.input.kind === "TEXT" ? cell.source.input.text.trim() : null) });
 }
 
 export function clearCellSource(snapshot: unknown, cellId: unknown) {
+  return setCellInput(snapshot, cellId, { kind: "UNSET" });
+}
+
+// Replace a formula and its input atomically: named AHS cells cannot pass through an empty intermediate state.
+export function setCellInput(snapshot: unknown, cellId: unknown, value: CellInput) {
   const s = parseSnapshot(snapshot);
+  const input = parseCellInput(value);
   const target = parseStableId<"cell">(cellId);
   const cell = findCell(s, target);
   requireCondition(cell, "Sel tidak ditemukan.");
   requireAhsVolumeEditable(s, cell);
+  validateAhsVolumeInput(s, cell, input);
   const vendorCell = s.worksheets.some(w => w.stage === "EVALUASI_VENDOR" && w.tables.some(t => t.id === cell.tableId));
-  requireCondition(vendorCell || !s.workbook?.cells.some(p => p.cellId === target && p.kind === "LABEL"), "Sel label tidak boleh dikosongkan.");
+  const ahsCell = s.worksheets.some(w => w.stage === "AHS" && w.tables.some(t => t.id === cell.tableId));
+  requireCondition(vendorCell || ahsCell || !s.workbook?.cells.some(p => p.cellId === target && p.kind === "LABEL"), "Sel label tidak boleh dikosongkan.");
   requireCondition(!s.workbook?.bindings.some(b => b.cellId === target && ["cost", "supplier", "supplierName"].includes(b.key)), "Sel ini dikelola pilihan vendor atau solver.");
   requireCondition(!PROFILES.some(profile => s.profiles[profile].hppBase.cellId === target), "HPP mengikuti Biaya Konversi.");
   requireCondition(!s.mappings.some(m => m.targetCellId === target || (m.sourceCellId === target && !(vendorCell && (m.sourceComponent.startsWith("vendor-live:") || m.sourceComponent.startsWith("project-location-live:"))))),
@@ -244,7 +263,8 @@ export function clearCellSource(snapshot: unknown, cellId: unknown) {
   const clearedFormulaId = cell.source.kind === "FORMULA" ? cell.source.formulaId : null;
   const formulas = clearedFormulaId ? s.formulas.filter(f => f.id !== clearedFormulaId) : s.formulas;
   const worksheets = s.worksheets.map(w => ({ ...w, tables: w.tables.map(t => ({ ...t,
-    cells: t.cells.map(c => c.id === target ? { ...c, source: { kind: "INPUT" as const, input: { kind: "UNSET" as const } } } : c) })) }));
+    cells: t.cells.map(c => c.id === target ? { ...c, source: { kind: "INPUT" as const, input } } : c) })) }));
   const workbook = s.workbook ? { ...s.workbook, cells: s.workbook.cells.map(p => p.cellId === target ? { ...p, kind: "INPUT" as const } : p) } : undefined;
-  return withIndexes(s, { worksheets, formulas, ...(workbook ? { workbook } : {}) });
+  return withIndexes(s, { worksheets, formulas, ...(workbook ? { workbook } : {}),
+    ...ahsNames(s, target, input.kind === "TEXT" ? input.text.trim() : null) });
 }

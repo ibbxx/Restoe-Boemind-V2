@@ -244,7 +244,7 @@ function validateReferences(s: WorkbookSnapshot) {
     requireCondition(memberIds.every(id => ahsCellIds.has(id) && byCell.get(id)?.scope === group.profile), "Referensi kelompok AHS hilang atau lintas profil.");
     const nameOf = (entry: { name: string; labelCellId: string | null; builtin: boolean }) => {
       const source = entry.labelCellId ? byCell.get(parseStableId<"cell">(entry.labelCellId))?.source : undefined;
-      if (!entry.builtin) requireCondition(source?.kind === "INPUT" && source.input.kind === "TEXT" && source.input.text.trim(), "Nama tambahan AHS wajib berupa teks dan tidak boleh kosong.");
+      if (!entry.builtin) requireCondition(source?.kind === "FORMULA" || (source?.kind === "INPUT" && source.input.kind === "TEXT" && source.input.text.trim()), "Nama tambahan AHS wajib berupa teks atau rumus dan tidak boleh kosong.");
       return (source?.kind === "INPUT" && source.input.kind === "TEXT" ? source.input.text : entry.name).trim().toLocaleLowerCase("id-ID");
     };
     const groupName = group.profile + ":" + (group.section ?? "BIAYA") + ":" + nameOf(group);
@@ -266,7 +266,7 @@ function validateReferences(s: WorkbookSnapshot) {
   }
   unique(ahsMembers, "AHS group membership");
   const reservedNames = {
-    INFORMASI: ["Tgl Analisis (Rn)", "Sumber", "Marketing", "Lokasi", "Pembayaran", "Dokumen", "Harga Keekonomian", "Diskon", "Harga Include"],
+    INFORMASI: ["Tgl Analisis (Rn)", "Sumber", "Marketing", "Lokasi", "Pembayaran", "Dokumen", "Harga Keekonomian", "Harga Include"],
     LABA: ["LABA KOTOR", "SELISIH PPN", "LABA BERSIH", "LABA BERSIH PER LITER", "PERSENTASE"],
   };
   const fieldNames = new Set<string>();
@@ -274,8 +274,8 @@ function validateReferences(s: WorkbookSnapshot) {
     requireCondition([field.labelCellId, field.valueCellId].every(id => ahsCellIds.has(id) && byCell.get(id)?.scope === field.profile) &&
       field.labelCellId !== field.valueCellId && !ahsMembers.includes(field.valueCellId), "Referensi uraian AHS hilang atau lintas profil.");
     const label = byCell.get(field.labelCellId)!.source;
-    requireCondition(label.kind === "INPUT" && label.input.kind === "TEXT" && label.input.text.trim(), "Nama uraian AHS wajib berupa teks.");
-    const name = label.input.text.trim().toLocaleLowerCase("id-ID"), key = `${field.profile}:${field.section}:${name}`;
+    requireCondition(label.kind === "FORMULA" || (label.kind === "INPUT" && label.input.kind === "TEXT" && label.input.text.trim()), "Nama uraian AHS wajib berupa teks atau rumus.");
+    const name = (label.kind === "INPUT" && label.input.kind === "TEXT" ? label.input.text : field.name).trim().toLocaleLowerCase("id-ID"), key = `${field.profile}:${field.section}:${name}`;
     requireCondition(!fieldNames.has(key) && !reservedNames[field.section].some(n => n.toLocaleLowerCase("id-ID") === name), "Nama uraian sudah digunakan.");
     fieldNames.add(key); ahsLabelIds.push(field.labelCellId);
     const value = byCell.get(field.valueCellId)!.source;

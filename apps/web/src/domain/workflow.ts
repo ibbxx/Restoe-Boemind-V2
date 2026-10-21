@@ -28,7 +28,7 @@ export function emptyWorkbook(projectName: string, analysisName: string, project
       cellIds: [p.cellId], formulaIds: [] }])),
     worksheets: [
       { id: id<"worksheet">(), stage: "EVALUASI_VENDOR", label: "Evaluasi Vendor", tables: [] },
-      { id: id<"worksheet">(), stage: "KONVERSI_JAGAD", label: "Konversi Jagad", tables: [] },
+      { id: id<"worksheet">(), stage: "KONVERSI_JAGAD", label: "Konversi Satuan", tables: [] },
       { id: id<"worksheet">(), stage: "AHS", label: "AHS", tables: hpp.map(p => p.table) },
     ] });
 }

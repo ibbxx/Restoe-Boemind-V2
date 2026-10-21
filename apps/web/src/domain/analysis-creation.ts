@@ -21,7 +21,6 @@ export interface AnalysisCreationInput {
   economicPrice?: string;
   source?: string;
   document?: string;
-  discount?: string;
   volume?: string;
 }
 
@@ -62,7 +61,7 @@ export function createAnalysisWorkbook(input: AnalysisCreationInput): WorkbookSn
       "Tgl Analisis (Rn)": date.split("-").reverse().join("/"),
       Marketing: input.marketing?.trim() ?? "", Pembayaran: input.payment?.trim() ?? "",
       "Harga Keekonomian": input.economicPrice?.trim() ?? "", Sumber: input.source?.trim() ?? "",
-      Lokasi: location, Dokumen: input.document?.trim() ?? "", Diskon: input.discount?.trim() ?? "",
+      Lokasi: location, Dokumen: input.document?.trim() ?? "",
     },
   };
   const snapshot = prepareLegacySheet(emptyWorkbook(projectName, analysisName, input.projectId));

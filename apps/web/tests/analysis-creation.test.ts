@@ -17,12 +17,13 @@ import { prepareAhsRollups } from "../src/domain/ahs-groups.ts";
 import { ahsVolumeSource, connectAhsVolumes } from "../src/domain/ahs-volume.ts";
 import { currentSnapshot } from "../src/domain/current-workbook.ts";
 import { encodeWorkbook, decodeWorkbook } from "../src/persistence/workbook-data.ts";
+import { vendorComponents } from "../src/domain/vendor-components.ts";
 
 const input: AnalysisCreationInput = {
   projectId: id<"project">(), projectName: " Gedung A ", analysisName: " Evaluasi vendor Oktober ", material: " HSD ",
   customer: " PT Customer ", location: " Samarinda ", analysisDate: "2026-10-20",
   marketing: " Budi ", payment: " 30 hari ", economicPrice: " 20.000 ",
-  source: " Penawaran ", document: " SPH-001 ", discount: " 2% ", volume: " 50.000 ",
+  source: " Penawaran ", document: " SPH-001 ", volume: " 50.000 ",
 };
 
 function cell(s: WorkbookSnapshot, stage: WorksheetSnapshot["stage"], label: string, scope: CellSnapshot["scope"]) {
@@ -44,7 +45,7 @@ function assertHeaders(s: WorkbookSnapshot) {
     assertText(cell(s, "KONVERSI_JAGAD", "Periode", profile), "P2-OKT-2026");
     assert.deepEqual(ahsVolumeSource(s, profile)?.source, { kind: "INPUT", input: { kind: "NUMERIC_TEXT", text: "50000" } });
     for (const [label, value] of Object.entries({ "Tgl Analisis (Rn)": "20/10/2026", Marketing: "Budi", Pembayaran: "30 hari",
-      "Harga Keekonomian": "20.000", Sumber: "Penawaran", Lokasi: "Samarinda", Dokumen: "SPH-001", Diskon: "2%" })) {
+      "Harga Keekonomian": "20.000", Sumber: "Penawaran", Lokasi: "Samarinda", Dokumen: "SPH-001" })) {
       assertText(cell(s, "AHS", label, profile), value);
     }
   }
@@ -76,7 +77,7 @@ test("optional AHS fields stay unset and the default date follows the Jakarta ca
     assertText(cell(s, "KONVERSI_JAGAD", "Periode", profile), analysisPeriod(analysisDateInput()));
     assertText(cell(s, "AHS", "Tgl Analisis (Rn)", profile), expectedDate);
     assert.deepEqual(ahsVolumeSource(s, profile)?.source, { kind: "INPUT", input: { kind: "UNSET" } });
-    for (const label of ["Marketing", "Pembayaran", "Harga Keekonomian", "Sumber", "Dokumen", "Diskon"]) {
+    for (const label of ["Marketing", "Pembayaran", "Harga Keekonomian", "Sumber", "Dokumen"]) {
       assert.deepEqual(cell(s, "AHS", label, profile).source, { kind: "INPUT", input: { kind: "UNSET" } });
     }
   }
@@ -153,6 +154,14 @@ test("headers and chosen date survive editor preparation and repeated current-st
   s = prepareAhsRollups(connectAhsVolumes(prepareNumericBlanks(makeAhsSaleInput(connectAhsHpp(prepareLegacySheet(prepareVendorColumns(s)))))));
   s = prepareSelectedVendorMappings(currentSnapshot(s), id<"user">());
   assertHeaders(s);
+  for (const offer of s.analysis.offers) {
+    const components = vendorComponents(s, offer.id);
+    const bph = components.find(component => component.role === "BPH")?.source;
+    const total = components.find(component => component.role === "TOTAL")?.source;
+    const formula = total && s.formulas.find(item => item.targetCellId === total.id);
+    assert(bph && formula, `BPH/TOTAL vendor ${offer.id} tidak lengkap`);
+    assert(formula.referenceCellIds.includes(bph.id), `BPH vendor ${offer.id} tidak masuk ALL IN`);
+  }
   for (const profile of ["INU", "SOLAR_BAWAH"] as const) {
     const volumeSource = ahsVolumeSource(s, profile)!;
     const follower = cell(s, "AHS", "Harga Jual · PBBKB · Volume", profile);

@@ -1,10 +1,11 @@
 import { AlertTriangle } from "lucide-react";
 
-export function ConfirmationDialog({ eyebrow, title, description, confirmLabel = "Lanjutkan", onConfirm, onCancel }: {
+export function ConfirmationDialog({ eyebrow, title, description, confirmLabel = "Lanjutkan", cancelLabel = "Batal", onConfirm, onCancel }: {
   eyebrow: string;
   title: string;
   description: string;
   confirmLabel?: string;
+  cancelLabel?: string;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -16,7 +17,7 @@ export function ConfirmationDialog({ eyebrow, title, description, confirmLabel =
         <h2 id="confirmation-dialog-title">{title}</h2>
         <p id="confirmation-dialog-description">{description}</p>
         <div className="analysis-delete-actions">
-          <button type="button" className="analysis-delete-cancel" onClick={onCancel}>Batal</button>
+          <button type="button" className="analysis-delete-cancel" onClick={onCancel}>{cancelLabel}</button>
           <button type="button" className="analysis-delete-confirm" onClick={onConfirm}>{confirmLabel}</button>
         </div>
       </div>

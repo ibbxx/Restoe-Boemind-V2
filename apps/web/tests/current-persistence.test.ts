@@ -11,7 +11,7 @@ import { emptyWorkbook, changeWorkbook } from "../src/domain/workflow.ts";
 import { prepareVendorColumns, selectSheetOffer, changeSheetProfile } from "../src/domain/dynamic-workflow.ts";
 import { prepareLegacySheet, legacyConfiguration, connectAhsHpp, makeAhsSaleInput } from "../src/domain/legacy-sheet.ts";
 import { ahsVolumeSource, connectAhsVolumes } from "../src/domain/ahs-volume.ts";
-import { addAhsItem, ahsGroups, ahsCell, ahsRoleCell, prepareAhsRollups } from "../src/domain/ahs-groups.ts";
+import { addAhsItem, ahsGroups, ahsCell, ahsRoleCell, ahsLabel, prepareAhsRollups } from "../src/domain/ahs-groups.ts";
 import { addAhsField, ahsFields } from "../src/domain/ahs-fields.ts";
 import { currentSnapshot } from "../src/domain/current-workbook.ts";
 import { analysisPeriod } from "../src/domain/analysis-creation.ts";
@@ -21,7 +21,9 @@ import type { WorkbookSnapshot } from "../src/domain/contracts.ts";
 import { FormulaEngine } from "../src/engine/formula-engine.ts";
 import type { SaveRequest } from "../src/application/contracts.ts";
 import { prepareCalculationPolicy } from "../src/domain/calculation-policy.ts";
-import { setCellFormula } from "../src/domain/structure.ts";
+import { setCellFormula, setCellInput } from "../src/domain/structure.ts";
+import { canvasCellAddresses } from "../src/domain/canvas-address.ts";
+import { displayFormula, resolveFormula } from "../src/domain/cell-address.ts";
 import { PostgresWorkbookRepository } from "../src/persistence/postgres-workbook-repository.ts";
 import { encodeWorkbook, decodeWorkbook } from "../src/persistence/workbook-data.ts";
 import { createWorkbookHandler } from "../src/server/workbook-handler.ts";
@@ -238,7 +240,7 @@ test("current-only migration, repeated Save, isolation and AHS round trips", asy
     await t.test("metadata and Save racing on the same version accept exactly one writer", async () => {
       const saved = await repo.current(dynamic.analysisId); assert(saved);
       const [metadata, save] = await Promise.all([
-        repo.updateAnalysis(dynamic.analysisId, actor, saved.snapshot.analysis.analysis.name, "ACTIVE", saved.version, id<"mutation">()),
+        repo.updateAnalysis(dynamic.analysisId, actor, saved.snapshot.analysis.analysis.name, "DRAFT", saved.version, id<"mutation">()),
         repo.save({ snapshot: numericCell(saved.snapshot, dynamic.workbook!.offers[0]!.baseCellId, "23000"), configuration: saved.configuration,
           expectedVersion: saved.version, mutationId: id<"mutation">() }, actor),
       ]);
@@ -470,12 +472,16 @@ test("current-only migration, repeated Save, isolation and AHS round trips", asy
         s = addAhsField(s, "INFORMASI", "PIC", "TEXT");
         const info = ahsFields(s, "INFORMASI")[0]!;
         s = setCellFormula(s, info.valueCellId, '"Ibnu"');
+        s = setCellFormula(s, info.labelCellId, '"PIC formula"');
+        const incomeGroup = ahsGroups(s, s.activeProfile, "PENDAPATAN").at(-1)!;
+        s = setCellFormula(s, incomeGroup.labelCellId!, `@{${info.valueCellId}}`);
+        s = setCellFormula(s, income.labelCellId!, resolveFormula(canvasCellAddresses(s).get(info.labelCellId)!, s, income.labelCellId!));
         s = addAhsField(s, "LABA", "Pembagian laba", "IDR");
         const indicator = ahsFields(s, "LABA")[0]!;
         const profit = ahsRoleCell(s, s.activeProfile, "L36", "LABA BERSIH")!.id;
         s = setCellFormula(s, indicator.valueCellId, `@{${profit}}*0.1`);
         for (const amount of [200, 201]) {
-          s = currentSnapshot(numericCell(s, income.priceCellId, String(amount)));
+          s = currentSnapshot(setCellFormula(s, income.priceCellId, `(${amount}*2)/2`));
           const configuration = s.workbook?.configuration ?? legacyConfiguration(s, saved.configuration);
           const result = await repo.save({ snapshot: s, configuration, expectedVersion: saved.version, mutationId: id<"mutation">() }, actor);
           assert.equal(result.status, "SAVED");
@@ -485,12 +491,27 @@ test("current-only migration, repeated Save, isolation and AHS round trips", asy
           const prepared = prepareAhsRollups(connectAhsVolumes(makeAhsSaleInput(connectAhsHpp(prepareLegacySheet(saved.snapshot)))));
           assert.equal(canonicalJson(prepared), canonicalJson(saved.snapshot));
           const run = new FormulaEngine(saved.configuration).evaluate(prepared);
+          assert.equal(ahsLabel(prepared, incomeGroup, run.provisional!.results), "Ibnu");
+          assert.equal(ahsLabel(prepared, income, run.provisional!.results), "PIC formula");
+          const labelExpression = prepared.formulas.find(f => f.targetCellId === income.labelCellId)!.expression;
+          assert.equal(displayFormula(labelExpression, prepared, income.labelCellId!), canvasCellAddresses(prepared).get(info.labelCellId));
           const total = run.provisional!.results.find(r => r.cellId === income.totalCellId);
           assert(total && "value" in total); assert.equal(Number(total.value), amount * 1000);
           const name = run.results.find(r => r.cellId === info.valueCellId);
           assert(name?.status === "TEXT"); assert.equal(name.text, "Ibnu");
           s = saved.snapshot;
         }
+        const include = ahsRoleCell(s, s.activeProfile, "J8", "Harga Include")!.id;
+        const sale = ahsRoleCell(s, s.activeProfile, "I11", "Harga Jual · Harga Dasar")!.id;
+        s = setCellInput(s, include, { kind: "NUMERIC_TEXT", text: "1110" });
+        s = currentSnapshot(setCellFormula(s, sale, `@{${include}}/1.11`));
+        const configuration = s.workbook?.configuration ?? legacyConfiguration(s, saved.configuration);
+        await repo.save({ snapshot: s, configuration, expectedVersion: saved.version, mutationId: id<"mutation">() }, actor);
+        saved = await repo.current(seed.analysisId); assert(saved?.configuration);
+        const prepared = prepareAhsRollups(connectAhsVolumes(makeAhsSaleInput(connectAhsHpp(prepareLegacySheet(saved.snapshot)))));
+        assert.equal(canonicalJson(prepared), canonicalJson(s), "reload must preserve manual totals and user sale formulas");
+        const saleResult = new FormulaEngine(saved.configuration).evaluate(prepared).provisional!.results.find(r => r.cellId === sale);
+        assert(saleResult && "value" in saleResult); assert.equal(saleResult.value, "1000");
         const [row] = await admin!`select count(*)::int as count from procurement.current_workbooks where analysis_id=${seed.analysisId}`;
         assert.equal(row!.count, 1);
       }

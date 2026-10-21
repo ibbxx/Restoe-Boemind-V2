@@ -1,7 +1,8 @@
 "use client";
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, FormEvent, MouseEvent, PointerEvent, ReactNode } from "react";
+import type { CSSProperties, FocusEvent, FormEvent, KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from "react";
+import { Printer } from "lucide-react";
 import type { AhsSection, CellSnapshot, TableSnapshot, WorkbookSnapshot, WorksheetSnapshot } from "../domain/contracts.ts";
 import type { Profile } from "../domain/profiles.ts";
 import type { StableId } from "../domain/ids.ts";
@@ -10,13 +11,14 @@ import type { AnalysisStatus } from "../domain/analysis-status.ts";
 import { createStableId as id, parseStableId } from "../domain/ids.ts";
 import type { EngineConfiguration, EngineRun } from "../engine/contracts.ts";
 import { buildSheetGrid, sheetNumber, sheetNumberFixed, sheetPercent } from "./sheet-grid.ts";
-import { addColumn, addRow, clearCellSource, mergeCells, removeColumn, removeRow, setCellFormula, unmergeCells } from "../domain/structure.ts";
+import { addColumn, addRow, clearCellSource, mergeCells, removeColumn, removeRow, setCellFormula, setCellInput, unmergeCells } from "../domain/structure.ts";
 import { addSheetVendor, changeSheetProfile, editSheetInput, removeSheetVendor, resizeSheet, selectSheetOffer } from "../domain/dynamic-workflow.ts";
 import { updateCellInput } from "../domain/commands.ts";
 import { binding } from "../domain/procurement-template.ts";
 import { addOffer, addVendor } from "../domain/commands.ts";
 import { appendField } from "../domain/workflow.ts";
-import { cellCodes, describeFormula, displayCellId, displayFormula, resolveFormula } from "../domain/cell-address.ts";
+import { cellCodes, describeCell, describeFormula, displayCellId, displayFormula, resolveFormula } from "../domain/cell-address.ts";
+import { canvasCellAddresses } from "../domain/canvas-address.ts";
 import { prepareLegacySheet, vendorColumn } from "../domain/legacy-sheet.ts";
 import { numericInput } from "../domain/numeric-input.ts";
 import { ahsVolumeSource, isAhsVolumeCell, isAhsVolumeFollower } from "../domain/ahs-volume.ts";
@@ -75,6 +77,7 @@ export function WorksheetSurface(props: SurfaceProps) {
   const [componentToRemove, setComponentToRemove] = useState("");
   const formulaInputRef = useRef<HTMLInputElement | null>(null);
   const formulaCellInputRef = useRef<HTMLInputElement | null>(null);
+  const skipFormulaBlur = useRef(false);
   const ahsAddButtonsRef = useRef<Partial<Record<AhsSection, HTMLButtonElement | null>>>({});
 
   const isINU = snapshot?.activeProfile === "INU";
@@ -164,14 +167,28 @@ export function WorksheetSurface(props: SurfaceProps) {
   const presentations = new Map(snapshot?.workbook?.cells.map(cell => [cell.cellId, cell]));
   const results = new Map((run?.provisional?.results ?? run?.results)?.map(result => [result.cellId, result]));
   const codes = useMemo(() => snapshot ? cellCodes(snapshot) : new Map<string, string>(), [snapshot]);
+  const addresses = useMemo(() => snapshot ? canvasCellAddresses(snapshot) : new Map<string, string>(), [snapshot]);
   const selectedTable = allTables.find(t => t.cells.some(c => c.id === selectedCellId));
   const selectedCell = selectedTable?.cells.find(c => c.id === selectedCellId);
-  const selectedVolumeFollower = !!snapshot && !!selectedCell && isAhsVolumeFollower(snapshot, selectedCell);
-  const selectedFormula = snapshot?.formulas.find(formula => formula.targetCellId === selectedCellId);
+  const selectedReadOnly = !!selectedCell && isManagedCell(selectedCell);
+  const selectedFormula = snapshot?.formulas.find(formula => formula.targetCellId === selectedCellId && formula.activation === "ACTIVE");
+  const selectedMapping = snapshot?.mappings.find(mapping => mapping.targetCellId === selectedCellId && mapping.status === "ACTIVE");
+  const selectedReferenceIds = selectedCellId && (selectedFormula || selectedMapping)
+    ? [...new Set([...(selectedFormula?.referenceCellIds ?? []), ...(selectedMapping ? [selectedMapping.sourceCellId] : [])])]
+    : [];
+  const selectedReferenceClasses = new Map(selectedReferenceIds.map((cellId, index) => [cellId, `cell-reference-${index % 3 + 1}`]));
+  const referenceClass = (cellId: string) => selectedReferenceClasses.get(cellId as StableId<"cell">) ?? "";
   const formulaMeaning = selectedFormula && snapshot && !isEditingFormula ? describeFormula(selectedFormula.expression, snapshot) : "";
   const selectedMerge = selectedTable?.merges.find(m => m.anchorCellId === selectedCellId);
   const selectedTableLayout = snapshot?.workbook?.tables.find(t => t.tableId === selectedTable?.id);
-  const addressOf = (cellId: string) => codes.get(cellId)?.split("!").at(-1) ?? "";
+  const addressOf = (cellId: string) => addresses.get(cellId) ?? "";
+  const selectedCellDescription = selectedCell && snapshot ? describeCell(selectedCell.id, snapshot) : "";
+
+  function isManagedCell(cell: CellSnapshot) {
+    return !!snapshot && (isAhsVolumeFollower(snapshot, cell) ||
+      Object.values(snapshot.profiles).some(profile => profile.hppBase.cellId === cell.id) ||
+      snapshot.mappings.some(mapping => mapping.targetCellId === cell.id));
+  }
 
   const activeCellAddress = selectedCell ? addressOf(selectedCell.id)
     : legacyTarget ? `${legacyTarget.stage} / ${legacyTarget.label}` : "Pilih sel";
@@ -184,7 +201,20 @@ export function WorksheetSurface(props: SurfaceProps) {
     setIsEditingFormula(false);
     setFormulaExpression(selectedCell?.source.kind === "INPUT" ? selectedCell.source.input.kind === "UNSET" ? "" : selectedCell.source.input.text
       : selectedCell ? "=" + storedExpression(selectedCell.id) : "");
+    skipFormulaBlur.current = document.activeElement === formulaInputRef.current;
     formulaInputRef.current?.blur();
+  }
+  function handleFormulaKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape") { event.preventDefault(); cancelFormula(); }
+    if (event.key === "Tab" && isEditingFormula) {
+      event.currentTarget.form?.requestSubmit();
+      if (event.currentTarget.form?.dataset.commitFailed === "true") event.preventDefault();
+      else skipFormulaBlur.current = true;
+    }
+  }
+  function handleFormulaBlur(event: FocusEvent<HTMLInputElement>) {
+    if (skipFormulaBlur.current) { skipFormulaBlur.current = false; return; }
+    if (isEditingFormula && !(event.relatedTarget instanceof Element && event.relatedTarget.closest(".formula-bar-form"))) event.currentTarget.form?.requestSubmit();
   }
   function focusFormulaBar() {
     requestAnimationFrame(() => formulaInputRef.current?.focus());
@@ -235,7 +265,7 @@ export function WorksheetSurface(props: SurfaceProps) {
 
   function startCellFormula(cellId: string, replace = false) {
     const target = allTables.flatMap(table => table.cells).find(cell => cell.id === cellId);
-    if (snapshot && target && isAhsVolumeFollower(snapshot, target)) { handleSelectCell(cellId); return; }
+    if (target && isManagedCell(target)) { handleSelectCell(cellId); return; }
     if (isEditingFormula) { insertReference(cellId); return; }
     setSelectedCellId(cellId);
     setLegacyTarget(null);
@@ -263,16 +293,21 @@ export function WorksheetSurface(props: SurfaceProps) {
     }
     const vendorName = snapshot.workbook?.offers.some(o => o.nameCellId === target.id);
     const isVendorCell = snapshot.worksheets.some(w => w.stage === "EVALUASI_VENDOR" && w.tables.some(t => t.id === target.tableId));
-    const vendorAddress = isVendorCell ? addressOf(target.id) : "";
+    const isAhsCell = snapshot.worksheets.some(w => w.stage === "AHS" && w.tables.some(t => t.id === target.tableId));
+    const vendorAddress = isVendorCell ? codes.get(target.id)?.split("!").at(-1) ?? "" : "";
     const vendorText = isVendorCell && (/^B\d+$/.test(vendorAddress) || Number(vendorAddress.match(/\d+$/)?.[0]) <= 9 || /18$/.test(vendorAddress));
     const isVendorComponent = isVendorCell && snapshot.analysis.offers.some(offer => vendorComponents(snapshot, offer.id).some(component => component.source.id === target.id));
-    const textField = snapshot.ahsFields?.some(field => field.valueCellId === target.id && field.valueType === "TEXT");
+    const ahsLabelCell = snapshot.ahsGroups?.some(group => group.labelCellId === target.id || group.items.some(item => item.labelCellId === target.id)) ||
+      snapshot.ahsFields?.some(field => field.labelCellId === target.id) || (isAhsCell && !snapshot.workbook &&
+        snapshot.worksheets.flatMap(worksheet => worksheet.tables).find(table => table.id === target.tableId)?.rows.some(row => row.id === target.rowId && row.label.endsWith("|template:text")));
+    const textField = ahsLabelCell || snapshot.ahsFields?.some(field => field.valueCellId === target.id && field.valueType === "TEXT");
     const isTextCell = !isVolume && (textField || vendorName || vendorText || (!isVendorComponent && (presentations.get(target.id)?.unit === "text" || (!snapshot.workbook && target.source.kind === "INPUT" && target.source.input.kind === "TEXT"))));
     const isNumber = !isTextCell && numericText.test(numeric);
     const saved = apply(() => {
       if (isFormula) return setCellFormula(snapshot, target.id, resolveFormula(raw.slice(1), snapshot, target.id));
-      const cleared = target.source.kind === "FORMULA" ? clearCellSource(snapshot, target.id) : snapshot;
       const input = raw ? { kind: isNumber ? "NUMERIC_TEXT" as const : "TEXT" as const, text: isNumber ? numeric : raw } : { kind: "UNSET" as const };
+      if (isAhsCell) return setCellInput(snapshot, target.id, input);
+      const cleared = target.source.kind === "FORMULA" ? clearCellSource(snapshot, target.id) : snapshot;
       if (isVendorCell) return updateCellInput(cleared, target.scope, target.id, input);
       if (cleared.workbook) return editSheetInput(cleared, { ...target, source: { kind: "INPUT", input: { kind: "UNSET" } } }, input);
       return updateCellInput(cleared, target.scope, target.id, input);
@@ -282,15 +317,20 @@ export function WorksheetSurface(props: SurfaceProps) {
   }
 
   function worksheetCellEditor(cell: CellSnapshot, label: string, format: "number" | "percentage" = "number") {
-    if (snapshot && isAhsVolumeFollower(snapshot, cell)) return <button type="button" className="cell-readout sheet-result" disabled={disabled}
-      aria-label={label} title="Mengikuti Volume Harga Jual · Harga Dasar" onClick={() => handleSelectCell(cell.id)}>{cellValue(cell)}</button>;
     const raw = cell.source.kind === "FORMULA" ? "=" + storedExpression(cell.id)
       : cell.source.kind === "INPUT" && cell.source.input.kind !== "UNSET" ? cell.source.input.text : "";
-    return <WorksheetCellInput key={cell.id + ":" + raw} label={label} raw={raw} shown={cellValue(cell, format)} selected={selectedCellId === cell.id}
+    return <span className={`sheet-cell${cell.id === selectedCellId ? " cell-selected" : ""}${referenceClass(cell.id) ? ` ${referenceClass(cell.id)}` : ""}`} data-cell-id={cell.id} data-cell-code={addresses.get(cell.id)}
+      title={[addressOf(cell.id), cellError(cell)].filter(Boolean).join(" · ")}
+      onPointerDownCapture={event => handleReferencePointerDown(event, cell.id)} onClickCapture={handleReferenceClick}>
+      {isManagedCell(cell) ? <button type="button" className="cell-readout sheet-result" disabled={disabled}
+        aria-label={label} title={isAhsVolumeFollower(snapshot!, cell) ? "Mengikuti Volume Harga Jual · Harga Dasar" : "Mengikuti sumber perhitungan"}
+        onClick={() => handleSelectCell(cell.id)}>{cellValue(cell, format)}</button> :
+      <WorksheetCellInput key={cell.id} label={label} raw={raw} shown={cellValue(cell, format)} selected={selectedCellId === cell.id}
       needsCommit={!!snapshot && isAhsVolumeCell(snapshot, cell) && cell.source.kind === "INPUT" && cell.source.input.kind === "TEXT"}
       editing={isEditingFormula} expression={formulaExpression} disabled={disabled} onFocusInput={input => { formulaCellInputRef.current = input; }}
       onSelect={() => handleSelectCell(cell.id)} onDraft={value => { setFormulaExpression(value); setIsEditingFormula(value.trimStart().startsWith("=")); onEditing?.(); }}
-      onCommit={value => commitCellValue(cell, value)} onCancel={cancelFormula} />;
+      onCommit={value => commitCellValue(cell, value)} onCancel={cancelFormula} />}
+    </span>;
   }
 
   // Toolbar actions
@@ -358,7 +398,7 @@ export function WorksheetSurface(props: SurfaceProps) {
       const section = ahsSectionOfCell(snapshot, selectedCell);
       const field = snapshot.ahsFields?.find(f => f.profile === snapshot.activeProfile && ahsCell(snapshot, f.valueCellId)?.rowId === selectedCell.rowId);
       if (field && configuration) {
-        onRequestConfirm?.("Hapus uraian", `Hapus uraian “${ahsLabel(snapshot, field)}” beserta nilainya?`, () => apply(() => removeAhsField(snapshot, field.valueCellId, configuration)));
+        onRequestConfirm?.("Hapus uraian", `Hapus uraian “${displayedAhsLabel(field)}” beserta nilainya?`, () => apply(() => removeAhsField(snapshot, field.valueCellId, configuration)));
         return;
       }
       const group = (section === "PENDAPATAN" || section === "BIAYA" ? ahsGroups(snapshot, snapshot.activeProfile, section) : []).find(g => g.items.some(item => ahsCell(snapshot, item.priceCellId)?.rowId === selectedCell.rowId ||
@@ -366,7 +406,7 @@ export function WorksheetSurface(props: SurfaceProps) {
       const item = group?.items.find(item => ahsCell(snapshot, item.priceCellId)?.rowId === selectedCell.rowId ||
         [item.priceCellId, item.volumeCellId, item.totalCellId].includes(selectedCell.id));
       if (!group || !item || !configuration) { setToolbarError("Baris inti AHS tidak dapat dihapus."); return; }
-      onRequestConfirm?.("Hapus uraian", `Hapus uraian “${ahsLabel(snapshot, item)}” beserta nilainya?`, () => apply(() => removeAhsEntry(snapshot, group.id, item.priceCellId, configuration, section === "PENDAPATAN" ? section : "BIAYA")));
+      onRequestConfirm?.("Hapus uraian", `Hapus uraian “${displayedAhsLabel(item)}” beserta nilainya?`, () => apply(() => removeAhsEntry(snapshot, group.id, item.priceCellId, configuration, section === "PENDAPATAN" ? section : "BIAYA")));
       return;
     }
     apply(() => removeRow(snapshot, selectedTable.id, selectedCell.rowId));
@@ -504,7 +544,7 @@ export function WorksheetSurface(props: SurfaceProps) {
   }
   const selectedResult = selectedCell ? results.get(selectedCell.id) : undefined;
   const selectedDiagnostic = selectedResult && "code" in selectedResult && (selectedResult.status !== "EMPTY" || selectedResult.code === "WAITING_INPUT")
-    ? `${selectedResult.status}: ${selectedResult.code}${selectedResult.path.length ? ` · ${selectedResult.path.map(id => codes.get(id) ?? id).join(" → ")}` : ""}` : "";
+    ? `${selectedResult.status}: ${selectedResult.code}${selectedResult.path.length ? ` · ${selectedResult.path.map(id => addresses.get(id) ?? "Sel tidak tersedia").join(" → ")}` : ""}` : "";
 
   if (!snapshot) return null;
   const materialCell = allTables.flatMap(table => table.cells).find(cell => codes.get(cell.id) === "EV!D5");
@@ -520,14 +560,14 @@ export function WorksheetSurface(props: SurfaceProps) {
   const fieldRows = new Map(extraFields.map(f => [ahsCell(snapshot, f.valueCellId)!.rowId, f]));
   const incomeRows = new Set(incomeAhsGroups.flatMap(g => g.items.filter(item => !item.builtin).map(item => ahsCell(snapshot, item.priceCellId)!.rowId)));
   const addedAhsRows = new Set(addedAhsItems.map(item => ahsCell(snapshot, item.priceCellId)?.rowId));
-  const addedAhsCells = new Set([...addedAhsItems.flatMap(item => [item.priceCellId, item.volumeCellId, item.totalCellId, item.labelCellId]),
-    ...extraFields.flatMap(f => [f.labelCellId, f.valueCellId])]);
   const ahsActionSections: readonly AhsSection[] = ["INFORMASI", "PENDAPATAN", "BIAYA", "LABA"];
+  const ahsResults = run?.provisional?.results ?? run?.results ?? [];
+  const displayedAhsLabel = (entry: { name: string; labelCellId: string | null }) => ahsLabel(snapshot, entry, ahsResults);
   const ahsActions = () => <AhsActions key={snapshot.analysisId + snapshot.activeProfile} section="INFORMASI" sections={ahsActionSections} snapshot={snapshot} configuration={configuration}
-    disabled={disabled} error={toolbarError} onApply={apply} addButtonRef={button => { ahsAddButtonsRef.current["INFORMASI"] = button; }} />;
+    results={ahsResults} disabled={disabled} error={toolbarError} onApply={apply} addButtonRef={button => { ahsAddButtonsRef.current["INFORMASI"] = button; }} />;
   const fieldRowsFor = (section: "INFORMASI" | "LABA") => ahsFields(snapshot, section).map(field => <tr key={field.valueCellId} className={section === "INFORMASI" ? "ahs-meta" : "profit-row"}>
     <th colSpan={section === "INFORMASI" ? 3 : 5}>{worksheetCellEditor(ahsCell(snapshot, field.labelCellId)!, "Nama uraian AHS")}</th>
-    <td colSpan={section === "INFORMASI" ? 3 : 1}>{worksheetCellEditor(ahsCell(snapshot, field.valueCellId)!, ahsLabel(snapshot, field), field.valueType === "PERCENT" ? "percentage" : "number")}</td>
+    <td colSpan={section === "INFORMASI" ? 3 : 1}>{worksheetCellEditor(ahsCell(snapshot, field.valueCellId)!, displayedAhsLabel(field), field.valueType === "PERCENT" ? "percentage" : "number")}</td>
   </tr>);
   const selectedVendorOfferId = snapshot.analysis.offers.find(activeOffer => activeOffer.id === snapshot.selectedOfferId)?.id;
   const selectedVendorComponents = selectedVendorOfferId ? vendorComponents(snapshot, selectedVendorOfferId) : [];
@@ -705,12 +745,13 @@ export function WorksheetSurface(props: SurfaceProps) {
                     const isHppBase = cell.id === snapshot.profiles[snapshot.activeProfile].hppBase.cellId;
                     const isPinned = snapshot.mappings.some(m => m.sourceCellId === cell.id && m.sourceComponent.startsWith("offer-value:"));
                     const isManualInput = cell.source.kind === "INPUT" && (!meta || meta.kind === "INPUT" || meta.kind === "BLANK") && !isPinned;
-                    const isFormulaSlot = meta?.kind === "BLANK" && meta.unit !== "text";
+                    const isFormulaSlot = stage === "KONVERSI_JAGAD" && meta?.unit !== "text" && !isManagedCell(cell);
 
                     // Cell CSS classes
                     const cellClasses: string[] = [];
                     if (stage === "EVALUASI_VENDOR" && selectedVendorColumnId && offers.some(offer => offer.columnId === colId) && colId !== selectedVendorColumnId) cellClasses.push("vendor-unselected");
                     if (isSelected) cellClasses.push("cell-selected");
+                    if (referenceClass(cell.id)) cellClasses.push(referenceClass(cell.id));
                     if (stage === "AHS" && colMeta?.label === "G" && ((rowNum >= 11 && rowNum <= 13) || (rowNum >= 16 && rowNum <= 33) || addedAhsRows.has(rowId))) cellClasses.push("category");
                     if (stage === "AHS" && colMeta?.label === "H") cellClasses.push("cost-description");
                     if (stage === "AHS" && (colMeta?.label === "I" || colMeta?.label === "K") && ((rowNum >= 14 && rowNum <= 33) || addedAhsRows.has(rowId))) {
@@ -750,8 +791,9 @@ export function WorksheetSurface(props: SurfaceProps) {
                     const sourceMapping = stage === "KONVERSI_JAGAD" && colIndex === 0 ? snapshot.mappings.find(mapping => mapping.sourceComponent.startsWith("vendor-live:") &&
                       table.cells.some(target => target.id === mapping.targetCellId && target.rowId === rowId)) : undefined;
                     const sourceComponent = selectedVendorComponents.find(component => component.source.id === sourceMapping?.sourceCellId);
-                    if (stage === "EVALUASI_VENDOR" || isAhsVolumeCell(snapshot, cell) || (stage === "AHS" && addedAhsCells.has(cell.id))) {
-                      displayContent = worksheetCellEditor(cell, stage === "EVALUASI_VENDOR" ? `Evaluasi Vendor · ${cellAddress}` : `Lembar AHS · ${isAhsVolumeCell(snapshot, cell) ? "Volume · " : ""}${cellAddress}`, fieldRows.get(rowId)?.valueCellId === cell.id && fieldRows.get(rowId)?.valueType === "PERCENT" ? "percentage" : "number");
+                    if (stage === "EVALUASI_VENDOR" || stage === "AHS") {
+                      displayContent = worksheetCellEditor(cell, stage === "EVALUASI_VENDOR" ? `Evaluasi Vendor · ${cellAddress}` : `Lembar AHS · ${isAhsVolumeCell(snapshot, cell) ? "Volume · " : ""}${cellAddress}`,
+                        (fieldRows.get(rowId)?.valueCellId === cell.id && fieldRows.get(rowId)?.valueType === "PERCENT") || (stage === "AHS" && rowNum === 38) ? "percentage" : "number");
                     } else if (sourceComponent) {
                       displayContent = <span className="sheet-result">{componentLabel(sourceComponent)}</span>;
                     } else if (stage === "KONVERSI_JAGAD" && cell.id === binding(snapshot, snapshot.activeProfile, "supplierName")) {
@@ -759,16 +801,16 @@ export function WorksheetSurface(props: SurfaceProps) {
                     } else if (stage === "KONVERSI_JAGAD" && isINU && meta?.address === "D30" && run?.solver?.cost) {
                       displayContent = <span className="sheet-result" title={run.solver.cost}>{sheetNumberFixed(run.solver.cost)}</span>;
                     } else if (meta?.kind === "LABEL") {
-                      displayContent = <span className="sheet-result">{stage === "KONVERSI_JAGAD" && rowNum === 23 ? "Konversi Satuan Jagad" : cellValue(cell)}</span>;
+                      displayContent = <span className="sheet-result">{stage === "KONVERSI_JAGAD" && rowNum === 23 ? "Konversi Satuan" : cellValue(cell)}</span>;
                     } else if (isSelected && isEditingFormula) {
                       displayContent = <><input ref={formulaCellInputRef} className="sheet-input" aria-label={`Rumus ${ariaLabel}`} value={formulaExpression}
                         disabled={disabled} onChange={event => { setFormulaExpression(event.target.value); onEditing?.(); }}
                         onKeyDown={event => { if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); formulaInputRef.current?.form?.requestSubmit(); }
                           if (event.key === "Escape") { event.preventDefault(); cancelFormula(); } }} />
                         <span className="cell-print-value">{cellValue(cell, stage === "KONVERSI_JAGAD" && rowNum === 42 ? "fixed-number" : "number")}</span></>;
-                    } else if (isManualInput || (cell.source.kind === "FORMULA" && !isHppBase)) {
+                    } else if (isManualInput || isFormulaSlot || (cell.source.kind === "FORMULA" && !isHppBase)) {
                       const raw = cell.source.kind === "FORMULA" ? "=" + storedExpression(cell.id)
-                        : cell.source.input.kind === "UNSET" ? "" : cell.source.input.text;
+                        : cell.source.kind === "INPUT" && cell.source.input.kind !== "UNSET" ? cell.source.input.text : "";
                       const shown = cellValue(cell, stage === "KONVERSI_JAGAD" && rowNum === 42 ? "fixed-number" : "number");
                       displayContent = <>
                         <input
@@ -807,7 +849,7 @@ export function WorksheetSurface(props: SurfaceProps) {
                         <span className="cell-print-value">{shown}</span>
                       </>;
                     } else {
-                      const val = cellValue(cell, stage === "AHS" && rowNum === 38 ? "percentage" : stage === "KONVERSI_JAGAD" && rowNum === 42 ? "fixed-number" : "number");
+                      const val = cellValue(cell, stage === "KONVERSI_JAGAD" && rowNum === 42 ? "fixed-number" : "number");
                       displayContent = <button type="button" className="cell-readout sheet-result" disabled={disabled}
                         aria-label={`${ariaLabel} · ${val}`}
                         title={[cellAddress, cellError(cell) ?? (isHppBase ? "Mengikuti Biaya Konversi" : val)].filter(Boolean).join(" · ")}
@@ -827,7 +869,7 @@ export function WorksheetSurface(props: SurfaceProps) {
                         rowSpan={entry.rowSpan}
                         colSpan={entry.colSpan}
                         data-cell-id={cell.id}
-                        data-cell-code={codes.get(cell.id)}
+                        data-cell-code={addresses.get(cell.id)}
                         title={[cellAddress, cellError(cell)].filter(Boolean).join(" · ")}
                         onPointerDownCapture={event => handleReferencePointerDown(event, cell.id)}
                         onClickCapture={handleReferenceClick}
@@ -873,7 +915,7 @@ export function WorksheetSurface(props: SurfaceProps) {
               <div><dt>Harga jual (Rp/L)</dt><dd>{overviewValue("sale")}</dd></div>
               <div><dt>Laba bersih (Rp)</dt><dd>{overviewValue("profit")}</dd></div>
             </dl>
-            <button type="button" className="print-button" disabled={disabled || isPreparingPrint} onClick={() => void handlePrint()}>{isPreparingPrint ? "Menyiapkan…" : "Cetak ke PDF"}</button>
+            <button type="button" className="print-button" aria-label={isPreparingPrint ? "Menyiapkan cetakan" : "Cetak ke PDF"} title={isPreparingPrint ? "Menyiapkan cetakan" : "Cetak ke PDF"} disabled={disabled || isPreparingPrint} onClick={() => void handlePrint()}><Printer aria-hidden="true" /></button>
           </header>
           {run?.provisional && <p className="sheet-assumptions">Asumsi nol sementara: {run.provisional.assumedZeroCellIds.length
             ? run.provisional.assumedZeroCellIds.map(id => displayCellId(id, snapshot)).join(", ") : "tidak ada"}. Sel asli tetap kosong.</p>}
@@ -888,17 +930,19 @@ export function WorksheetSurface(props: SurfaceProps) {
                   aria-label="Formula sel terpilih"
                   value={formulaExpression}
                   data-editing={isEditingFormula}
-                  readOnly={selectedVolumeFollower}
+                  readOnly={selectedReadOnly}
                   onChange={e => { setIsEditingFormula(true); setFormulaExpression(e.target.value); onEditing?.(); }}
-                  onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); cancelFormula(); } }}
+                  onKeyDown={handleFormulaKeyDown}
+                  onBlur={handleFormulaBlur}
                   placeholder={selectedCell ? "Ketik formula atau klik sel lain untuk menyisipkan referensi" : "Pilih sel pada tabel"}
                   disabled={disabled || (!selectedCell && !legacyTarget)}
                 />
-                <button className="toolbar-button toolbar-button-primary" type="submit" disabled={disabled || selectedVolumeFollower || (!selectedCell && !legacyTarget)}>Terapkan</button>
+                <button className="toolbar-button toolbar-button-primary" type="submit" disabled={disabled || selectedReadOnly || (!selectedCell && !legacyTarget)}>Terapkan</button>
                 {isEditingFormula && <button className="toolbar-button" type="button" onClick={cancelFormula}>Batal edit</button>}
               </form>
               {onSave && <button className="toolbar-button toolbar-button-save" type="button" aria-busy={saving} disabled={disabled || saving} onClick={onSave}>{saving ? "Menyimpan…" : "Simpan perubahan"}</button>}
             </div>
+            {selectedCellDescription && <p className="formula-meaning" aria-label="Keterangan sel terpilih">{activeCellAddress} · {selectedCellDescription}</p>}
             {formulaMeaning && <p className="formula-meaning">Arti rumus: {formulaMeaning}</p>}
             <details className="structure-details"><summary>Aksi struktur</summary><div className="toolbar-row actions-row">
               <div className="toolbar-group merge-group">
@@ -910,7 +954,7 @@ export function WorksheetSurface(props: SurfaceProps) {
                 </form>
               </div>
               <div className="toolbar-group structure-group">
-                <button type="button" disabled={disabled || selectedVolumeFollower || !selectedCell} onClick={handleClearCell}>Kosongkan sel</button>
+                <button type="button" disabled={disabled || selectedReadOnly || !selectedCell} onClick={handleClearCell}>Kosongkan sel</button>
                 <button type="button" disabled={disabled || !selectedTable} onClick={handleAddRow}>+ Baris</button>
                 <button type="button" disabled={disabled || !selectedTable} onClick={handleAddColumn}>+ Kolom</button>
                 <button type="button" disabled={disabled || !selectedCell} onClick={handleRemoveRow}>Hapus baris</button>
@@ -935,8 +979,8 @@ export function WorksheetSurface(props: SurfaceProps) {
             </section>
 
             {/* Konversi section with the required INU toggle */}
-            <section className="sheet-card conversion-card" aria-label="Satuan Jagad">
-            <div className="sheet-section-title"><h2>Konversi Satuan Jagad</h2></div>
+            <section className="sheet-card conversion-card" aria-label="Konversi Satuan">
+            <div className="sheet-section-title"><h2>Konversi Satuan</h2></div>
             <div className="conversion-control-bar">
               <label className="profile-picker">Profil Konversi
                 <select aria-label="Profil Konversi" value={snapshot.activeProfile} disabled={disabled}
@@ -955,7 +999,7 @@ export function WorksheetSurface(props: SurfaceProps) {
               table,
               "KONVERSI_JAGAD",
               "conversion-sheet",
-              "Konversi Satuan Jagad"
+              "Konversi Satuan"
             ))}
             </section>
           </div>
@@ -996,8 +1040,9 @@ export function WorksheetSurface(props: SurfaceProps) {
   function legacySlot(stage: Stage, label: string, kind: "TEXT" | "NUMERIC_TEXT" = "NUMERIC_TEXT", explicit?: CellSnapshot,
     commit?: (value: string) => void) {
     const cell = explicit ?? findLegacy(stage, label);
+    if (cell && stage === "AHS") return worksheetCellEditor(cell, `Lembar AHS · ${label}`, label === "PERSENTASE" ? "percentage" : "number");
     const pinned = cell && snapshot?.mappings.some(m => m.sourceCellId === cell.id && m.sourceComponent.startsWith("offer-value:"));
-    const code = cell ? codes.get(cell.id) : undefined;
+    const code = cell ? addresses.get(cell.id) : undefined;
     const solverCost = stage === "KONVERSI_JAGAD" && label === "Biaya · Harga Dasar" && isINU && !!run?.solver;
     let content: ReactNode;
     if (cell && (stage === "EVALUASI_VENDOR" || (snapshot && isAhsVolumeCell(snapshot, cell)))) content = worksheetCellEditor(cell, `${stage === "EVALUASI_VENDOR" ? "Evaluasi Vendor" : "Lembar AHS"} · ${label}`);
@@ -1068,8 +1113,18 @@ export function WorksheetSurface(props: SurfaceProps) {
     vendor: { ...snapshot.analysis.vendors.find(v => v.id === offer.vendorId)!, name: vendorDisplayName(offer.id) } })) ?? [];
   const legacyVendorColumns = Math.max(3, legacyOffers.length);
   const legacyComponentRows = legacyOffers[0] ? vendorComponents(snapshot, legacyOffers[0].offer.id).filter(component => component.role !== "TOTAL") : [];
+  const ahsCaption = (address: string, fallback: string) => {
+    const actualAddress = address.replace(/\d+$/, number => String(Number(number) - (isINU ? 0 : 1)));
+    const cell = ahsCell(snapshot, [...codes].find(([, code]) => code === `AHS-${isINU ? "INU" : "SOLAR"}!${actualAddress}`)?.[0] ?? null);
+    return cell ? worksheetCellEditor(cell, `Nama AHS · ${fallback}`) : fallback;
+  };
+  const ahsEntryLabel = (entry: { name: string; labelCellId: string | null }, label: string) => {
+    const cell = ahsCell(snapshot, entry.labelCellId);
+    return cell ? worksheetCellEditor(cell, label) : displayedAhsLabel(entry);
+  };
   const header = (label: string, className: string) => <tr key={label} className={className}>
-    <th colSpan={5}>{label}</th>
+    <th colSpan={5}>{ahsCaption(({ "TOTAL PENDAPATAN": "G9", "HARGA JUAL SETELAH PAJAK": "G10", "TOTAL BIAYA": "G14", "BIAYA PER LITER": "G15",
+      "LABA KOTOR": "G34", "SELISIH PPN": "G35", "LABA BERSIH": "G36", "LABA BERSIH PER LITER": "G37", PERSENTASE: "G38" } as Record<string, string>)[label]!, label)}</th>
     <td>{legacySlot("AHS", label)}</td>
   </tr>;
   const conversionColumns = ["Harga INU", "Biaya"];
@@ -1097,23 +1152,25 @@ export function WorksheetSurface(props: SurfaceProps) {
             <div><dt>Harga jual (Rp/L)</dt><dd>{legacyOverviewValue("AHS", "Harga Jual · Harga Dasar")}</dd></div>
             <div><dt>Laba bersih (Rp)</dt><dd>{legacyOverviewValue("AHS", "LABA BERSIH")}</dd></div>
           </dl>
-          <button type="button" className="print-button" disabled={disabled || isPreparingPrint} onClick={() => void handlePrint()}>{isPreparingPrint ? "Menyiapkan…" : "Cetak ke PDF"}</button>
+          <button type="button" className="print-button" aria-label={isPreparingPrint ? "Menyiapkan cetakan" : "Cetak ke PDF"} title={isPreparingPrint ? "Menyiapkan cetakan" : "Cetak ke PDF"} disabled={disabled || isPreparingPrint} onClick={() => void handlePrint()}><Printer aria-hidden="true" /></button>
         </header>
         <div className="sheet-canvas-toolbar">
           <div className="toolbar-row formula-row">
             <span className="editor-cell-address" aria-label="Alamat sel">{activeCellAddress}</span>
             <form className="formula-bar-form" onSubmit={handleApplyFormula}>
               <input ref={formulaInputRef} aria-label="Formula sel terpilih" value={formulaExpression} data-editing={isEditingFormula}
-                readOnly={selectedVolumeFollower}
+                readOnly={selectedReadOnly}
                 disabled={disabled || (!selectedCell && !legacyTarget)}
                 onChange={event => { setIsEditingFormula(true); setFormulaExpression(event.target.value); onEditing?.(); }}
-                onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); cancelFormula(); } }}
+                onKeyDown={handleFormulaKeyDown}
+                onBlur={handleFormulaBlur}
                 placeholder="Ketik = lalu klik sel sumber" />
-              <button className="toolbar-button toolbar-button-primary" disabled={disabled || selectedVolumeFollower || (!selectedCell && !legacyTarget)}>Terapkan</button>
+              <button className="toolbar-button toolbar-button-primary" disabled={disabled || selectedReadOnly || (!selectedCell && !legacyTarget)}>Terapkan</button>
               {isEditingFormula && <button className="toolbar-button" type="button" onClick={cancelFormula}>Batal edit</button>}
             </form>
             {onSave && <button className="toolbar-button toolbar-button-save" type="button" aria-busy={saving} disabled={disabled || saving} onClick={onSave}>{saving ? "Menyimpan…" : "Simpan perubahan"}</button>}
           </div>
+          {selectedCellDescription && <p className="formula-meaning" aria-label="Keterangan sel terpilih">{activeCellAddress} · {selectedCellDescription}</p>}
           {formulaMeaning && <p className="formula-meaning">Arti rumus: {formulaMeaning}</p>}
           {toolbarError && <div className="toolbar-error" role="alert">{toolbarError}</div>}
           {selectedDiagnostic && <div className="toolbar-error" role="status">{selectedDiagnostic}</div>}
@@ -1163,9 +1220,9 @@ export function WorksheetSurface(props: SurfaceProps) {
           </div>
 
 
-          <table className="conversion-sheet" aria-label="Konversi Satuan Jagad">
+          <table className="conversion-sheet" aria-label="Konversi Satuan">
             <colgroup><col /><col /><col /></colgroup>
-            <thead><tr><th colSpan={3}>Konversi Satuan Jagad</th></tr></thead>
+            <thead><tr><th colSpan={3}>Konversi Satuan</th></tr></thead>
             <tbody>
               <tr className="sheet-spacer"><td colSpan={3} /></tr>
               <tr className="conversion-period"><th colSpan={3}>{legacySlot("KONVERSI_JAGAD", "Periode", "TEXT")}</th></tr>
@@ -1196,20 +1253,20 @@ export function WorksheetSurface(props: SurfaceProps) {
         <div className="sheet-table-scroll">
         <table className="ahs-sheet" aria-label="Analisis Harga Satuan AHS">
           <colgroup>{Array.from({ length: 6 }, (_, i) => <col key={i} />)}</colgroup>
-          <thead><tr className="ahs-title"><th colSpan={6}><div className="vendor-title-layout"><div className="vendor-title-content">ANALISIS HARGA SATUAN (AHS)</div>{ahsActions()}</div></th></tr></thead>
+          <thead><tr className="ahs-title"><th colSpan={6}><div className="vendor-title-layout"><div className="vendor-title-content">{ahsCaption("G3", "ANALISIS HARGA SATUAN (AHS)")}</div>{ahsActions()}</div></th></tr></thead>
           <tbody>
-            {[["Tgl Analisis (Rn)", "Sumber"], ["Marketing", "Lokasi"], ["Pembayaran", "Dokumen"], ["Harga Keekonomian", "Diskon"]].map(pair => (
+            {[["Tgl Analisis (Rn)", "Sumber"], ["Marketing", "Lokasi"], ["Pembayaran", "Dokumen"]].map((pair, index) => (
               <tr className="ahs-meta" key={pair[0]}>
-                {pair.map(label => <Fragment key={label}><th>{label}</th><td colSpan={2}>{legacySlot("AHS", label, "TEXT")}</td></Fragment>)}
+                {pair.map((label, column) => <Fragment key={label}><th>{ahsCaption(`${column ? "J" : "G"}${index + 4}`, label)}</th><td colSpan={2}>{legacySlot("AHS", label, "TEXT")}</td></Fragment>)}
               </tr>
             ))}
             {fieldRowsFor("INFORMASI")}
-            <tr className="ahs-meta ahs-include"><th colSpan={3}>HARGA INCLUDE</th><td colSpan={3}>{legacySlot("AHS", "Harga Include")}</td></tr>
+            <tr className="ahs-meta ahs-include"><th colSpan={3}>{ahsCaption("G8", "HARGA INCLUDE")}</th><td colSpan={3}>{legacySlot("AHS", "Harga Include")}</td></tr>
             {header("TOTAL PENDAPATAN", "income-row")}{header("HARGA JUAL SETELAH PAJAK", "income-row")}
             {incomeAhsGroups.flatMap(group => group.items.map((item, index) => (
               <tr className="income-row" key={item.priceCellId}>
-                {index === 0 && <th rowSpan={group.items.length} className="category">{ahsLabel(snapshot, group)}</th>}
-                <td className="cost-description">{ahsLabel(snapshot, item)}</td>
+                {index === 0 && <th rowSpan={group.items.length} className="category">{ahsEntryLabel(group, "Nama kelompok AHS")}</th>}
+                <td className="cost-description">{ahsEntryLabel(item, "Nama uraian AHS")}</td>
                 <td>{legacySlot("AHS", `${group.name} · ${item.name}`, "NUMERIC_TEXT", ahsCell(snapshot, item.priceCellId))}</td>
                 <td>{legacySlot("AHS", `${group.name} · ${item.name} · Volume`, "NUMERIC_TEXT", ahsCell(snapshot, item.volumeCellId))}</td>
                 <td colSpan={2}>{legacySlot("AHS", `${group.name} · ${item.name} · Total`, "NUMERIC_TEXT", ahsCell(snapshot, item.totalCellId))}</td>
@@ -1218,8 +1275,8 @@ export function WorksheetSurface(props: SurfaceProps) {
             {header("TOTAL BIAYA", "cost-row")}{header("BIAYA PER LITER", "cost-row")}
             {currentAhsGroups.flatMap(group => group.items.map((item, index) => (
               <tr className="cost-row" key={item.priceCellId}>
-                {index === 0 && <th rowSpan={group.items.length} className="category">{ahsLabel(snapshot, group)}</th>}
-                <td className="cost-description" title={ahsLabel(snapshot, item)}>{item.labelCellId ? worksheetCellEditor(ahsCell(snapshot, item.labelCellId)!, "Nama uraian AHS") : item.name}</td>
+                {index === 0 && <th rowSpan={group.items.length} className="category">{ahsEntryLabel(group, "Nama kelompok AHS")}</th>}
+                <td className="cost-description" title={displayedAhsLabel(item)}>{ahsEntryLabel(item, "Nama uraian AHS")}</td>
                 <td className="currency-cell"><span>Rp</span>{legacySlot("AHS", `${group.name} · ${item.name}`, "NUMERIC_TEXT", ahsCell(snapshot, item.priceCellId))}</td>
                 <td>{legacySlot("AHS", `${group.name} · ${item.name} · Volume`, "NUMERIC_TEXT", ahsCell(snapshot, item.volumeCellId))}</td>
                 <td colSpan={2} className="currency-cell"><span>Rp</span>{legacySlot("AHS", `${group.name} · ${item.name} · Total`, "NUMERIC_TEXT", ahsCell(snapshot, item.totalCellId))}</td>
@@ -1227,7 +1284,7 @@ export function WorksheetSurface(props: SurfaceProps) {
             )))}
             {summaryRows.map(label => header(label, "profit-row"))}
             {fieldRowsFor("LABA")}
-            <tr className="ahs-notes"><td colSpan={6}>Notes{legacySlot("AHS", "Notes", "TEXT")}</td></tr>
+            <tr className="ahs-notes"><td colSpan={6}>{ahsCaption("G39", "Notes")}{legacySlot("AHS", "Notes", "TEXT")}</td></tr>
           </tbody>
         </table>
         </div>

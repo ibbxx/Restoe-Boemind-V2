@@ -8,7 +8,8 @@ import { sourceAddress, units } from "./procurement-template.ts";
 import { parseFormula, references } from "../engine/parser.ts";
 import { removeFormulaAddends } from "./vendor-components.ts";
 import type { Ast } from "../engine/parser.ts";
-import type { EngineConfiguration } from "../engine/contracts.ts";
+import type { EngineConfiguration, NodeResult } from "../engine/contracts.ts";
+import { setCellInput } from "./structure.ts";
 
 export const AHS_COST_GROUPS = [
   { label: "HPP", rows: ["Harga Dasar", "OAT", "PBBKB", "PPH INU 0,3%", "BPH Migas 0,25%"] },
@@ -25,15 +26,20 @@ const normalized = (name: string) => name.trim().toLocaleLowerCase("id-ID");
 const cellsOf = (s: WorkbookSnapshot) => s.worksheets.flatMap(w => w.tables.flatMap(t => t.cells));
 export function ahsCell(s: WorkbookSnapshot, cellId: string | null) { return cellsOf(s).find(c => c.id === cellId); }
 
-export function ahsLabel(s: WorkbookSnapshot, item: { readonly name: string; readonly labelCellId: string | null }): string {
+export function ahsLabel(s: WorkbookSnapshot, item: { readonly name: string; readonly labelCellId: string | null }, results?: readonly NodeResult[]): string {
   const source = ahsCell(s, item.labelCellId)?.source;
+  if (source?.kind === "FORMULA" && results) {
+    const result = results.find(result => result.cellId === item.labelCellId);
+    return result && "text" in result ? result.text : result && "value" in result ? result.value : result && "code" in result ? `${result.status}: ${result.code}` : "…";
+  }
   return source?.kind === "INPUT" && source.input.kind === "TEXT" ? source.input.text : item.name;
 }
 
 export function ahsRoleCell(s: WorkbookSnapshot, profile: Profile, address: string, label: string) {
   const targets = new Set(s.workbook?.cells.filter(p => p.address === sourceAddress(address, profile)).map(p => p.cellId));
   const found = s.worksheets.filter(w => w.stage === "AHS").flatMap(w => w.tables.flatMap(t => t.cells.filter(c => c.scope === profile &&
-    (s.workbook ? targets.has(c.id) : t.rows.some(r => r.id === c.rowId && r.label === label)))))[0];
+    (s.workbook ? targets.has(c.id) : t.rows.some(r => r.id === c.rowId && (label ? r.label === label :
+      r.label.startsWith(`@AHS-${profile === "INU" ? "INU" : "SOLAR"}!${sourceAddress(address, profile)}|`)))))))[0];
   return found ?? (label === "HPP · Harga Dasar" ? ahsCell(s, s.profiles[profile].hppBase.cellId) : undefined);
 }
 
@@ -70,7 +76,7 @@ export function ahsGroups(s: WorkbookSnapshot, profile = s.activeProfile, sectio
       return { name, builtin: true, labelCellId: ahsRoleCell(s, profile, `H${number}`, "")?.id ?? null,
         priceCellId: price.id, volumeCellId: volume.id, totalCellId: total.id };
     }).filter((item): item is AhsItem => item !== null);
-    const labelCell = s.workbook ? ahsRoleCell(s, profile, `G${firstRow}`, "") : undefined;
+    const labelCell = ahsRoleCell(s, profile, `G${firstRow}`, "");
     return { id: parseStableId<"ahs-group">(labelCell?.id ?? items[0]?.priceCellId), profile, name: group.label,
       builtin: true, labelCellId: labelCell?.id ?? null, items, ...(section === "PENDAPATAN" ? { section } : {}) };
   });
@@ -263,15 +269,14 @@ export function renameAhsEntry(s: WorkbookSnapshot, groupId: string, itemId: str
   const groups = [...ahsGroups(s, s.activeProfile, section)], group = groups.find(g => g.id === groupId), name = rawName.trim();
   requireCondition(group && name, "Nama dan kelompok AHS wajib diisi.");
   const item = itemId ? group.items.find(item => item.priceCellId === itemId) : null;
-  requireCondition(itemId ? item && !item.builtin : !group.builtin, "Komponen bawaan AHS tidak dapat diubah namanya.");
+  requireCondition(!itemId || item, "Uraian AHS tidak ditemukan.");
   requireCondition(itemId ? !group.items.some(other => other.priceCellId !== itemId && normalized(ahsLabel(s, other)) === normalized(name))
     : !groups.some(other => other.id !== groupId && normalized(ahsLabel(s, other)) === normalized(name)), "Nama sudah digunakan.");
   const target = item ?? group, labelId = target.labelCellId;
   requireCondition(labelId, "Sel nama AHS tidak ditemukan.");
-  const cell = ahsCell(s, labelId)!;
-  requireCondition(cell.source.kind === "INPUT", "Nama masih berupa rumus; ubah melalui formula bar.");
   const updated = groups.map(g => g.id !== groupId ? g : item ? { ...g, items: g.items.map(other => other === item ? { ...other, name } : other) } : { ...g, name });
-  return finishAhsChange(s, s.worksheets.flatMap(w => w.tables.map(t => ({ ...t, cells: t.cells.map(c => c.id === labelId ? renameInput(c, name) : c) }))), updated, s.formulas, undefined, undefined, section);
+  const renamed = setCellInput(s, labelId, { kind: "TEXT", text: name });
+  return finishAhsChange(renamed, renamed.worksheets.flatMap(w => w.tables), updated, renamed.formulas, undefined, undefined, section);
 }
 
 export function removeAhsEntry(s: WorkbookSnapshot, groupId: string, itemId: string | null, configuration: EngineConfiguration, section: AhsGroupSection = "BIAYA"): WorkbookSnapshot {
@@ -284,6 +289,16 @@ export function removeAhsEntry(s: WorkbookSnapshot, groupId: string, itemId: str
   const tables = s.worksheets.flatMap(w => w.tables);
   const removedRows = new Set(items.map(item => ahsCell(s, item.priceCellId)!.rowId));
   const removing = new Set(tables.flatMap(t => t.cells.filter(c => removedRows.has(c.rowId)).map(c => c.id)));
+  const remaining = group.items.filter(item => !items.includes(item));
+  let movedLabelRow: CellSnapshot["rowId"] | undefined;
+  if (remaining.length && group.labelCellId && removing.has(group.labelCellId)) {
+    const nextPrice = ahsCell(s, remaining[0]!.priceCellId)!;
+    const table = tables.find(t => t.id === nextPrice.tableId)!;
+    const destination = table.cells.find(c => c.rowId === nextPrice.rowId && c.columnId === table.columns.find(col => col.label === "G")?.id)!;
+    requireCondition(destination.source.kind === "INPUT" && (destination.source.input.kind === "UNSET" ||
+      (destination.source.input.kind === "TEXT" && !destination.source.input.text.trim())), "Sel tujuan nama kelompok masih berisi nilai; kosongkan terlebih dahulu.");
+    removing.delete(group.labelCellId); removing.add(destination.id); movedLabelRow = nextPrice.rowId;
+  }
   const targets = rollupTargets(s, section);
   requireCondition(!configuration.aggregates.some(a => a.memberCellIds.some(id => removing.has(id))) &&
     !configuration.selectionDependentCellIds.some(id => removing.has(id)) &&
@@ -294,16 +309,7 @@ export function removeAhsEntry(s: WorkbookSnapshot, groupId: string, itemId: str
   const writers = new Map(changed.map(f => [f.targetCellId, f]));
   for (const f of s.formulas) if (!removing.has(f.targetCellId) && !writers.has(f.targetCellId))
     requireCondition(!f.referenceCellIds.some(id => removing.has(id)), "Uraian masih digunakan rumus lain; lepaskan referensinya terlebih dahulu.");
-  const remaining = group.items.filter(item => !items.includes(item));
-  let updated = groups.filter(g => g.id !== group.id || remaining.length).map(g => g.id !== group.id ? g : { ...g, name: ahsLabel(s, g), items: remaining });
-  const movedLabels = new Map<string, string>();
-  if (remaining.length && group.labelCellId && removing.has(group.labelCellId)) {
-    const nextPrice = ahsCell(s, remaining[0]!.priceCellId)!;
-    const table = tables.find(t => t.id === nextPrice.tableId)!;
-    const label = table.cells.find(c => c.rowId === nextPrice.rowId && c.columnId === table.columns.find(col => col.label === "G")?.id)!;
-    movedLabels.set(label.id, ahsLabel(s, group));
-    updated = updated.map(g => g.id === group.id ? { ...g, labelCellId: label.id } : g);
-  }
+  const updated = groups.filter(g => g.id !== group.id || remaining.length).map(g => g.id !== group.id ? g : { ...g, name: ahsLabel(s, g), items: remaining });
   const nextTables = tables.flatMap(t => {
     const category = t.columns.find(c => c.label === "G")?.id;
     const merges = t.merges.filter(m => {
@@ -314,7 +320,7 @@ export function removeAhsEntry(s: WorkbookSnapshot, groupId: string, itemId: str
     });
     const table = { ...t, rows: t.rows.filter(r => !removedRows.has(r.id)), rowOrder: t.rowOrder.filter(row => !removedRows.has(row)), merges,
       cells: t.cells.filter(c => !removing.has(c.id)).map(c => writers.has(c.id) ? { ...c, source: { kind: "FORMULA" as const, formulaId: writers.get(c.id)!.id } }
-        : movedLabels.has(c.id) ? renameInput(c, movedLabels.get(c.id)!) : c) };
+        : movedLabelRow && c.id === group.labelCellId ? { ...c, rowId: movedLabelRow } : c) };
     return table.rows.length ? [groupMerges(table, updated.filter(g => g.items.every(item => table.cells.some(c => c.id === item.priceCellId))))] : [];
   });
   return finishAhsChange(s, nextTables, updated, [...s.formulas.filter(f => !removing.has(f.targetCellId) && !writers.has(f.targetCellId)), ...changed], undefined, undefined, section);

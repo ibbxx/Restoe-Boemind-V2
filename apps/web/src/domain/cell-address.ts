@@ -1,12 +1,7 @@
 import type { WorkbookSnapshot } from "./contracts.ts";
-
-function columnName(index: number): string {
-  let name = "";
-  for (let number = index + 1; number > 0; number = Math.floor((number - 1) / 26)) {
-    name = String.fromCharCode(65 + (number - 1) % 26) + name;
-  }
-  return name;
-}
+import { canvasCellAddresses, columnName } from "./canvas-address.ts";
+import { ahsGroups, ahsLabel, ahsRoleCell } from "./ahs-groups.ts";
+import { vendorComponents } from "./vendor-components.ts";
 
 function columnIndex(name: string): number {
   return [...name].reduce((index, letter) => index * 26 + letter.charCodeAt(0) - 64, 0) - 1;
@@ -64,55 +59,68 @@ export function cellCodes(snapshot: WorkbookSnapshot): ReadonlyMap<string, strin
   return codes;
 }
 
-function localFormulaCells(snapshot: WorkbookSnapshot, codes: ReadonlyMap<string, string>, targetCellId?: string) {
-  const table = snapshot.worksheets.flatMap(worksheet => worksheet.tables).find(table => table.cells.some(cell => cell.id === targetCellId));
-  if (snapshot.workbook) return table?.cells ?? [];
-  const prefix = targetCellId ? codes.get(targetCellId)?.split("!")[0] : undefined;
-  return prefix ? snapshot.worksheets.flatMap(worksheet => worksheet.tables.flatMap(table => table.cells))
-    .filter(cell => codes.get(cell.id)?.split("!")[0] === prefix) : [];
+function formulaProfile(snapshot: WorkbookSnapshot, targetCellId?: string) {
+  const cell = snapshot.worksheets.flatMap(w => w.tables.flatMap(t => t.cells)).find(c => c.id === targetCellId);
+  return cell && cell.scope !== "SHARED" ? cell.scope : snapshot.activeProfile;
 }
 
 export function displayFormula(expression: string, snapshot: WorkbookSnapshot, targetCellId?: string): string {
-  const codes = cellCodes(snapshot);
-  const localIds = new Set<string>(localFormulaCells(snapshot, codes, targetCellId).map(cell => cell.id));
-  return mapFormulaCode(expression, codeExpression => displayCode(codeExpression.replace(/@\{([0-9a-fA-F-]+)\}/g, (token, id: string) => {
-    const code = codes.get(id);
-    return code && localIds.has(id) ? code.split("!").at(-1)! : code ? displayCode(code) : token;
-  })));
+  const addresses = canvasCellAddresses(snapshot, formulaProfile(snapshot, targetCellId));
+  return mapFormulaCode(expression, codeExpression => codeExpression.replace(/@\{([0-9a-fA-F-]+)\}/g, (token, id: string) => addresses.get(id) ?? token));
 }
 
-export function describeFormula(expression: string, snapshot: WorkbookSnapshot): string {
-  const codes = cellCodes(snapshot);
-  return mapFormulaCode(expression, codeExpression => codeExpression.replace(/\s*\*\s*/g, " × ").replace(/\s*\/\s*/g, " ÷ ").replace(/@\{([0-9a-fA-F-]+)\}/g, (token, id: string) => {
+export function describeCell(id: string, snapshot: WorkbookSnapshot): string {
     const worksheet = snapshot.worksheets.find(sheet => sheet.tables.some(table => table.cells.some(cell => cell.id === id)));
     const table = worksheet?.tables.find(item => item.cells.some(cell => cell.id === id));
     const cell = table?.cells.find(item => item.id === id);
-    if (!table || !cell) return codes.get(id) ?? token;
+    if (!table || !cell) return "Sel tidak tersedia";
+    if (worksheet?.stage === "AHS" && cell.scope !== "SHARED") {
+      const field = snapshot.ahsFields?.find(field => field.valueCellId === id || field.labelCellId === id);
+      if (field) return `AHS › ${field.section === "INFORMASI" ? "Informasi" : "Laba"} › ${ahsLabel(snapshot, field)}`;
+      const groups = ahsRoleCell(snapshot, cell.scope, "I33", "RESIKO · Kenaikan Harga")
+        ? [...ahsGroups(snapshot, cell.scope, "PENDAPATAN"), ...ahsGroups(snapshot, cell.scope, "BIAYA")]
+        : snapshot.ahsGroups?.filter(g => g.profile === cell.scope) ?? [];
+      for (const group of groups) {
+        const name = ahsLabel(snapshot, group);
+        if (group.labelCellId === id) return `AHS › ${name}`;
+        const item = group.items.find(item => [item.labelCellId, item.priceCellId, item.volumeCellId, item.totalCellId].includes(cell.id));
+        if (item) return `AHS › ${name} › ${ahsLabel(snapshot, item)}${item.volumeCellId === id ? " › Volume" : item.totalCellId === id ? " › Total" : ""}`;
+      }
+    }
     const label = table.columnOrder.slice(0, table.columnOrder.indexOf(cell.columnId)).reverse()
       .map(columnId => table.cells.find(item => item.rowId === cell.rowId && item.columnId === columnId)?.source)
       .find(source => source?.kind === "INPUT" && source.input.kind === "TEXT" && source.input.text.trim());
     const legacyVendor = /\|vendor:([^:]+):(.+)$/.exec(table.rows.find(row => row.id === cell.rowId)?.label ?? "");
-    const rowName = label?.kind === "INPUT" && label.input.kind === "TEXT" ? label.input.text.trim().replace(/\s*:+$/, "") : legacyVendor?.[2] ?? "";
-    if (!rowName) return displayCode(codes.get(id) ?? token);
+    const component = legacyVendor ? vendorComponents(snapshot, legacyVendor[1]!).find(c => c.source.id === cell.id) : undefined;
+    const componentSource = component?.labelCell?.source;
+    const componentName = componentSource?.kind === "INPUT" && componentSource.input.kind === "TEXT" ? componentSource.input.text
+      : component ? /^[0-9a-f-]{36}$/.test(component.role) ? "Uraian tambahan" : component.role : undefined;
+    const rowLabel = table.rows.find(row => row.id === cell.rowId)?.label ?? "";
+    const ownText = cell.source.kind === "INPUT" && cell.source.input.kind === "TEXT" ? cell.source.input.text.trim() : "";
+    const rowName = label?.kind === "INPUT" && label.input.kind === "TEXT" ? label.input.text.trim().replace(/\s*:+$/, "")
+      : componentName ?? legacyVendor?.[2] ?? (rowLabel && !/^(?:@|\d|ahs-field$|ahs-extra$|ahs-item:|component:|vendor-extra:)/.test(rowLabel) ? rowLabel : ownText);
     const offer = snapshot.workbook?.offers.find(item => item.columnId === cell.columnId && worksheet?.stage === "EVALUASI_VENDOR");
     const vendorCell = offer && table?.cells.find(item => item.id === offer.nameCellId);
     const vendorId = snapshot.analysis.offers.find(item => item.id === (offer?.offerId ?? legacyVendor?.[1]))?.vendorId;
     const vendorName = vendorCell?.source.kind === "INPUT" && vendorCell.source.input.kind === "TEXT" ? vendorCell.source.input.text.trim()
       : snapshot.analysis.vendors.find(vendor => vendor.id === vendorId)?.name ?? "";
-    if (worksheet?.stage === "EVALUASI_VENDOR") return `${rowName} (${vendorName || table.columns.find(item => item.id === cell.columnId)?.label || "Vendor"})`;
-    return `${rowName} (${worksheet?.stage === "KONVERSI_JAGAD" ? "Konversi" : "AHS"} ${cell.scope === "SOLAR_BAWAH" ? "Solar" : "INU"})`;
-  }));
+    const stage = worksheet?.stage === "EVALUASI_VENDOR" ? "Evaluasi Vendor" : worksheet?.stage === "KONVERSI_JAGAD" ? "Konversi" : "AHS";
+    return [stage, vendorName, rowName.replaceAll(" · ", " › ") || displayCellId(id, snapshot)].filter(Boolean).join(" › ");
+}
+
+export function describeFormula(expression: string, snapshot: WorkbookSnapshot): string {
+  return mapFormulaCode(expression, codeExpression => codeExpression.replace(/\s*\*\s*/g, " × ").replace(/\s*\/\s*/g, " ÷ ")
+    .replace(/@\{([0-9a-fA-F-]+)\}/g, (_, id: string) => describeCell(id, snapshot)));
 }
 
 export function resolveFormula(expression: string, snapshot: WorkbookSnapshot, targetCellId?: string): string {
   if (expression.length > 16384) throw new Error("Rumus terlalu panjang.");
   const codes = cellCodes(snapshot);
-  const matches = new Map<string, string[]>();
+  const matches = new Map<string, Set<string>>();
   for (const [id, code] of codes) for (const key of [code.toUpperCase(), displayCode(code).toUpperCase()]) {
-    matches.set(key, [...(matches.get(key) ?? []), id]);
+    const ids = matches.get(key) ?? new Set<string>(); ids.add(id); matches.set(key, ids);
   }
-  const localCells = localFormulaCells(snapshot, codes, targetCellId);
-  const target = localCells.find(cell => cell.id === targetCellId);
+  const addresses = new Map([...canvasCellAddresses(snapshot, formulaProfile(snapshot, targetCellId))].map(([id, address]) => [address, id]));
   const addressPattern = "(?:(?:EV|INU|SOLAR|AHS-INU|AHS-SOLAR)(?:-T\\d+|\\d+)?!)?\\$?[A-Za-z]+\\$?[1-9]\\d*";
   let rangeMembers = 0;
   return mapFormulaCode(expression, codeExpression => {
@@ -134,8 +142,7 @@ export function resolveFormula(expression: string, snapshot: WorkbookSnapshot, t
     return expanded.replace(/@\{[0-9a-fA-F-]+\}|\b(?:EV|INU|SOLAR|AHS-INU|AHS-SOLAR)(?:-T\d+|\d+)?!\$?[A-Za-z]+\$?\d+\b|(?<![!A-Za-z0-9_])\$?[A-Za-z]+\$?\d+\b/gi, token => {
       if (token.startsWith("@{")) return token;
       const code = token.toUpperCase().replaceAll("$", "");
-      const ids = code.includes("!") ? matches.get(code) ?? [] : localCells.filter(cell =>
-        (cell.scope === target?.scope || cell.scope === "SHARED") && codes.get(cell.id)?.split("!").at(-1)?.toUpperCase() === code).map(cell => cell.id);
+      const ids = code.includes("!") ? [...matches.get(code) ?? []] : addresses.has(code) ? [addresses.get(code)!] : [];
       if (!ids.length) throw new Error(`Kode sel ${code} tidak ditemukan. Pilih sel sumber di kanvas.`);
       if (ids.length > 1) throw new Error(`Kode sel ${code} ambigu (${ids.length} sel). Pilih sel sumber di kanvas.`);
       return `@{${ids[0]}}`;
@@ -144,6 +151,5 @@ export function resolveFormula(expression: string, snapshot: WorkbookSnapshot, t
 }
 
 export function displayCellId(id: string, snapshot: WorkbookSnapshot): string {
-  const code = cellCodes(snapshot).get(id);
-  return code ? displayCode(code) : id;
+  return canvasCellAddresses(snapshot).get(id) ?? "Sel tidak tersedia";
 }

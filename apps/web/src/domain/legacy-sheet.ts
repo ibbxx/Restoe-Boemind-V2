@@ -10,6 +10,7 @@ import type { EngineConfiguration } from "../engine/contracts.ts";
 import { DecimalArithmetic } from "../engine/decimal.ts";
 import { OPERATIONAL_DECIMAL_POLICY, OPERATIONAL_POLICY_VERSION_ID } from "./calculation-policy.ts";
 import { ahsFieldUnit } from "./ahs-fields.ts";
+import { ahsGroups } from "./ahs-groups.ts";
 
 let referenceTemplate: WorkbookSnapshot | undefined;
 
@@ -80,6 +81,16 @@ export function prepareLegacySheet(s: WorkbookSnapshot): WorkbookSnapshot {
     additions.set(stage, [...(additions.get(stage) ?? []), table]);
     return cell;
   };
+  for (const [index, profile] of PROFILES.entries()) {
+    for (const [address, source] of Object.entries(SOURCE_SHEETS[index]!.cells)) {
+      const row = Number(address.match(/\d+$/)?.[0]) + (profile === "SOLAR_BAWAH" ? 1 : 0);
+      if (!source.text || !(/^G/.test(address) || (/^H/.test(address) && row >= 11 && row <= 33) || (/^J/.test(address) && row >= 4 && row <= 7))) continue;
+      const prefix = `@AHS-${profile === "INU" ? "INU" : "SOLAR"}!${address}|`;
+      if (!s.worksheets.some(w => w.stage === "AHS" && w.tables.some(t => t.rows.some(r => r.label.startsWith(prefix))))) {
+        add("AHS", profile, prefix + "template:text", { kind: "TEXT", text: row === 4 && address.startsWith("G") ? "Tgl Analisis (Rn)" : source.text });
+      }
+    }
+  }
   const extraLabels = [...new Set(s.analysis.offers.flatMap(offer => offer.values.map(v => v.label)))]
     .filter(label => !label.startsWith("formula:") && ![...vendorComponentLabels, "Nama vendor", "Notes"].some(known => known.toLocaleLowerCase("id-ID") === label.toLocaleLowerCase("id-ID")));
   const extraRowNumbers = new Map(extraLabels.map((label, index) => {
@@ -146,7 +157,7 @@ export function prepareLegacySheet(s: WorkbookSnapshot): WorkbookSnapshot {
   const worksheetFields: Record<string, string[]> = {
     EVALUASI_VENDOR: ["Pekerjaan / Material", "Customer", "Lokasi"],
     KONVERSI_JAGAD: ["Periode", "Lokasi", ...["Harga INU", "Biaya"].flatMap(column => ["Harga Dasar", "PPN", "PBBKB", "PPH", "OAT", "PPN OAT", "ALL IN"].map(row => `${column} · ${row}`)), "Gross Profit", "BPH Migas", "Net Margin", "PPH", "Profit MUE"],
-    AHS: ["Tgl Analisis (Rn)", "Sumber", "Marketing", "Lokasi", "Pembayaran", "Dokumen", "Harga Keekonomian", "Diskon", "Harga Include", "TOTAL PENDAPATAN", "HARGA JUAL SETELAH PAJAK", "TOTAL BIAYA", "BIAYA PER LITER", "LABA KOTOR", "SELISIH PPN", "LABA BERSIH", "LABA BERSIH PER LITER", "PERSENTASE", "Notes",
+    AHS: ["Tgl Analisis (Rn)", "Sumber", "Marketing", "Lokasi", "Pembayaran", "Dokumen", "Harga Keekonomian", "Harga Include", "TOTAL PENDAPATAN", "HARGA JUAL SETELAH PAJAK", "TOTAL BIAYA", "BIAYA PER LITER", "LABA KOTOR", "SELISIH PPN", "LABA BERSIH", "LABA BERSIH PER LITER", "PERSENTASE", "Notes",
       ...["Harga Dasar", "PBBKB", "PPN 11%"].flatMap(label => ["", " · Volume", " · Total"].map(suffix => `Harga Jual · ${label}${suffix}`)),
       ...[["HPP", "Harga Dasar", "OAT", "PBBKB", "PPH INU 0,3%", "BPH Migas 0,25%"], ["PAJAK", "PPN 11%", "PPH penjualan"], ["COST OF FUND", "Investor", "Bunga Bank", "Diskonto SKBDN"], ["OPERASIONAL", "Biaya Operasional", "Bonus Marketing"], ["ASET", "Tangki Solar"], ["KOORDINASI", "Ormas/Lainnya"], ["RELASI", "Biaya Proyek", "Biaya Mediator"], ["RESIKO", "Biaya Resiko", "Kenaikan Harga"]].flatMap(([group, ...rows]) => rows.flatMap(label => ["", " · Volume", " · Total"].map(suffix => `${group} · ${label}${suffix}`)))],
   };
@@ -175,7 +186,7 @@ export function prepareLegacySheet(s: WorkbookSnapshot): WorkbookSnapshot {
       const address = w.stage !== "EVALUASI_VENDOR" ? addresses.get(label) : undefined;
       if (address && scope !== "SHARED") {
         profileCells.get(scope)!.set(sourceAddress(address, scope), cell);
-        if (cell.source.kind === "INPUT" && cell.source.input.kind === "UNSET") seeded.push({ cell, address, profile: scope });
+        if (!existing.length && cell.source.kind === "INPUT" && cell.source.input.kind === "UNSET") seeded.push({ cell, address, profile: scope });
       }
     }
   }
@@ -222,18 +233,36 @@ export function prepareLegacySheet(s: WorkbookSnapshot): WorkbookSnapshot {
       referenceCellIds: [...new Set(references(parseFormula(expression), () => []))] as StableId<"cell">[], activation: "ACTIVE", sourceKind: "OPERATIONAL_OVERRIDE", provenance: null });
     writers.set(item.cell.id, { kind: "FORMULA", formulaId });
   }
-  if (!additions.size && !writers.size && !removedAutomaticFormulaIds.size) return s.policy.status === "CONFIGURED" ? s
-    : changeWorkbook(s, { policy: { status: "CONFIGURED", versionId: id<"policy">() } });
+  if (!additions.size && !writers.size && !removedAutomaticFormulaIds.size) return prepareLegacyAhsLabels(s.policy.status === "CONFIGURED" ? s
+    : changeWorkbook(s, { policy: { status: "CONFIGURED", versionId: id<"policy">() } }));
   const worksheets = s.worksheets.map(w => ({ ...w, tables: [...w.tables, ...(additions.get(w.stage) ?? [])].map(t => ({ ...t,
     cells: t.cells.map(c => resetAutomaticPbbkb.has(c.id) ? { ...c, source: { kind: "INPUT" as const, input: { kind: "UNSET" as const } } }
       : writers.has(c.id) ? { ...c, source: writers.get(c.id)! } : c) })) }));
   const all = worksheets.flatMap(w => w.tables.flatMap(t => t.cells));
-  return changeWorkbook(s, { worksheets, formulas: formulas.filter(formula => !removedAutomaticFormulaIds.has(formula.id)),
+  return prepareLegacyAhsLabels(changeWorkbook(s, { worksheets, formulas: formulas.filter(formula => !removedAutomaticFormulaIds.has(formula.id)),
     policy: s.policy.status === "CONFIGURED" ? s.policy : { status: "CONFIGURED", versionId: id<"policy">() },
     profiles: Object.fromEntries(PROFILES.map(profile => [profile, {
     ...s.profiles[profile], cellIds: all.filter(c => c.scope === profile).map(c => c.id),
     formulaIds: formulas.filter(f => !removedAutomaticFormulaIds.has(f.id) && all.some(c => c.id === f.targetCellId && c.scope === profile)).map(f => f.id),
-  }])) as unknown as WorkbookSnapshot["profiles"] });
+  }])) as unknown as WorkbookSnapshot["profiles"] }));
+}
+
+function prepareLegacyAhsLabels(s: WorkbookSnapshot): WorkbookSnapshot {
+  if (!s.ahsGroups) return s;
+  const defaults = PROFILES.flatMap(profile => (["PENDAPATAN", "BIAYA"] as const).flatMap(section => ahsGroups({ ...s, ahsGroups: [] }, profile, section)));
+  let changed = false;
+  const groups = s.ahsGroups.map(group => {
+    const original = defaults.find(g => g.profile === group.profile && g.items.some(item => group.items.some(entry => entry.priceCellId === item.priceCellId)));
+    const labelCellId = group.labelCellId ?? (group.builtin ? original?.labelCellId ?? null : null);
+    const items = group.items.map(item => {
+      const label = item.labelCellId ?? (item.builtin ? original?.items.find(entry => entry.priceCellId === item.priceCellId)?.labelCellId ?? null : null);
+      if (label !== item.labelCellId) changed = true;
+      return { ...item, labelCellId: label };
+    });
+    if (labelCellId !== group.labelCellId) changed = true;
+    return { ...group, labelCellId, items };
+  });
+  return changed ? changeWorkbook(s, { ahsGroups: groups }) : s;
 }
 
 export function connectAhsHpp(s: WorkbookSnapshot): WorkbookSnapshot {
@@ -281,7 +310,8 @@ export function makeAhsSaleInput(s: WorkbookSnapshot): WorkbookSnapshot {
     if (!gross || !sale || !pbbkb || !ppn || (gross.source.kind !== "INPUT" && gross.source.kind !== "FORMULA")) continue;
     const saleFormulaId = sale.source.kind === "FORMULA" ? sale.source.formulaId : null;
     const oldFormula = saleFormulaId ? s.formulas.find(f => f.id === saleFormulaId) : undefined;
-    if (oldFormula && oldFormula.expression !== `@{${gross.id}}/1.11`) continue;
+    // Only migrate the original sale formula; user inputs and overrides remain authoritative.
+    if (!oldFormula || oldFormula.sourceKind !== "WORKBOOK_SOURCE" || oldFormula.expression !== `@{${gross.id}}/1.11`) continue;
     const incomeGroups = s.ahsGroups?.filter(g => g.profile === profile && g.section === "PENDAPATAN");
     const priceIds = incomeGroups?.length ? incomeGroups.flatMap(g => g.items.map(item => item.priceCellId)) : [sale.id, pbbkb.id, ppn.id];
     const grossExpression = `SUM(${priceIds.map(id => `@{${id}}`).join(",")})`;

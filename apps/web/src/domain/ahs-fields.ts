@@ -4,7 +4,7 @@ import { createStableId as id } from "./ids.ts";
 import { ahsCell, ahsLabel, ahsRoleCell, finishAhsChange } from "./ahs-groups.ts";
 import { units } from "./procurement-template.ts";
 import { requireCondition } from "./validation.ts";
-import { updateCellInput } from "./commands.ts";
+import { setCellInput } from "./structure.ts";
 
 export const ahsFieldUnit = (type: AhsValueType): CellPresentation["unit"] => type === "TEXT" ? "text" : type === "IDR" || type === "IDR/L" ? type : "1";
 export const ahsFields = (s: WorkbookSnapshot, section: AhsField["section"], profile = s.activeProfile) =>
@@ -56,7 +56,7 @@ function findField(s: WorkbookSnapshot, valueCellId: string) {
 export function renameAhsField(s: WorkbookSnapshot, valueCellId: string, rawName: string) {
   const field = findField(s, valueCellId), name = rawName.trim();
   requireCondition(name, "Nama uraian wajib diisi.");
-  const renamed = updateCellInput(s, field.profile, field.labelCellId, { kind: "TEXT", text: name });
+  const renamed = setCellInput(s, field.labelCellId, { kind: "TEXT", text: name });
   return finishAhsChange(renamed, renamed.worksheets.flatMap(w => w.tables), [], renamed.formulas, undefined, undefined, null,
     renamed.ahsFields!.map(f => f.valueCellId === valueCellId ? { ...f, name } : f));
 }

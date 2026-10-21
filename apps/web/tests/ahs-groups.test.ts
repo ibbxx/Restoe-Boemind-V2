@@ -109,8 +109,10 @@ for (const layout of ["template", "legacy"] as const) {
     assert.throws(() => addAhsItem(s, group.id, " "), /wajib/);
     assert.throws(() => addAhsItem(s, null, "X", " hpp "), /sudah digunakan/);
     assert.throws(() => addAhsItem(s, group.id, " harga dasar "), /sudah digunakan/);
-    assert.throws(() => renameAhsEntry(s, group.id, null, "X"), /bawaan/);
-    assert.throws(() => renameAhsEntry(s, group.id, group.items[0]!.priceCellId, "X"), /bawaan/);
+    const renamedGroup = renameAhsEntry(s, group.id, null, "X");
+    assert.equal(ahsLabel(renamedGroup, ahsGroups(renamedGroup)[0]!), "X");
+    const renamedItem = renameAhsEntry(s, group.id, group.items[0]!.priceCellId, "X");
+    assert.equal(ahsLabel(renamedItem, ahsGroups(renamedItem)[0]!.items[0]!), "X");
     assert.throws(() => removeAhsEntry(s, group.id, group.items[0]!.priceCellId, config(s)), /bawaan/);
     assert.throws(() => removeAhsEntry(s, group.id, null, config(s)), /bawaan/);
     const added = addAhsItem(s, null, "X", "Tambahan"), custom = ahsGroups(added).at(-1)!;

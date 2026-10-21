@@ -34,7 +34,7 @@ import { analysisListUrl, matchesName, projectLocationUrl, readProjectLocation }
 import type { ProjectLocation } from "./project-navigation.ts";
 
 type ProjectListItem = { id: string; name: string };
-type Confirmation = { eyebrow: string; title: string; description: string; confirmLabel?: string; onConfirm: () => void };
+type Confirmation = { eyebrow: string; title: string; description: string; confirmLabel?: string; cancelLabel?: string; onConfirm: () => void };
 function field(form: FormData, name: string) { return String(form.get(name) ?? "").trim(); }
 function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); return new FormData(event.currentTarget); }
 export function ProcurementWorkspace() {
@@ -160,7 +160,7 @@ export function ProcurementWorkspace() {
 
   function navigate(next: ProjectLocation, discardDraft = false) {
     if (dirty && !discardDraft) {
-      setConfirmation({ eyebrow: "Pindah halaman", title: "Buang draft yang belum disimpan?", description: "Perubahan pada analisis ini belum disimpan dan akan hilang jika Anda meninggalkan worksheet.", confirmLabel: "Lanjutkan", onConfirm: () => navigate(next, true) });
+      setConfirmation({ eyebrow: "Peringatan keras", title: "Perubahan belum disimpan", description: "Jika Anda keluar sekarang, semua perubahan sejak penyimpanan terakhir akan hilang permanen. Simpan data terlebih dahulu atau pilih keluar dan buang perubahan.", cancelLabel: "Tetap di halaman", confirmLabel: "Keluar dan buang perubahan", onConfirm: () => navigate(next, true) });
       return;
     }
     writeLocation(next);
@@ -277,7 +277,7 @@ export function ProcurementWorkspace() {
   }
   function logout(discardDraft = false) {
     if (dirty && !discardDraft) {
-      setConfirmation({ eyebrow: "Keluar", title: "Buang draft yang belum disimpan?", description: "Perubahan yang belum disimpan akan hilang ketika Anda keluar dari workspace.", confirmLabel: "Keluar", onConfirm: () => logout(true) });
+      setConfirmation({ eyebrow: "Peringatan keras", title: "Perubahan belum disimpan", description: "Jika Anda keluar sekarang, semua perubahan sejak penyimpanan terakhir akan hilang permanen. Simpan data terlebih dahulu atau pilih keluar dan buang perubahan.", cancelLabel: "Tetap di halaman", confirmLabel: "Keluar dan buang perubahan", onConfirm: () => logout(true) });
       return;
     }
     void task(async () => { invalidateSessionRequests(); workspaceEpoch.current++; await api("/api/session", { method: "DELETE" }, false); setActor(null); clearWorksheet(); setProjects([]); projectsRef.current = []; setAnalyses([]);
@@ -337,7 +337,7 @@ export function ProcurementWorkspace() {
       const leavingDraft = dirty && snapshotRef.current && next.analysisId !== snapshotRef.current.analysisId;
       if (leavingDraft && !acceptHistory.current && delta) {
         // Restore the actual history position before asking, so Cancel preserves Forward/Back.
-        restoringHistory.current = () => setConfirmation({ eyebrow: "Pindah halaman", title: "Buang draft yang belum disimpan?", description: "Perubahan pada analisis ini belum disimpan dan akan hilang jika Anda meninggalkan worksheet.", confirmLabel: "Lanjutkan", onConfirm: () => { acceptHistory.current = true; window.history.go(-delta); } });
+        restoringHistory.current = () => setConfirmation({ eyebrow: "Peringatan keras", title: "Perubahan belum disimpan", description: "Jika Anda keluar sekarang, semua perubahan sejak penyimpanan terakhir akan hilang permanen. Simpan data terlebih dahulu atau pilih keluar dan buang perubahan.", cancelLabel: "Tetap di halaman", confirmLabel: "Keluar dan buang perubahan", onConfirm: () => { acceptHistory.current = true; window.history.go(-delta); } });
         window.history.go(delta); return;
       }
       acceptHistory.current = false; historyIndex.current = targetIndex;
@@ -354,7 +354,7 @@ export function ProcurementWorkspace() {
     return () => { channel.close(); sessionChannel.current = null; };
   }, [requireLogin]);
   useEffect(() => {
-    const guard = (event: BeforeUnloadEvent) => { if (dirty) event.preventDefault(); };
+    const guard = (event: BeforeUnloadEvent) => { if (dirty) { event.preventDefault(); event.returnValue = ""; } };
     window.addEventListener("beforeunload", guard); return () => window.removeEventListener("beforeunload", guard);
   }, [dirty]);
 
@@ -398,6 +398,11 @@ export function ProcurementWorkspace() {
     return flight;
   }
   async function performSave() {
+    const current = snapshotRef.current;
+    const analysis = current && analyses.find(item => item.id === current.analysisId);
+    if (!analysis || !ANALYSIS_STATUSES.includes(analysis.status)) {
+      throw new Error("Status analisis wajib dipilih dan harus valid sebelum data dapat disimpan.");
+    }
     const formulaInput = document.querySelector<HTMLInputElement>('[data-testid="procurement-sheet"] .formula-bar-form input[data-editing="true"]');
     if (formulaInput) {
       const form = formulaInput.form;
@@ -408,7 +413,6 @@ export function ProcurementWorkspace() {
     if (active instanceof HTMLInputElement && active.matches('[data-testid="procurement-sheet"] .sheet-input')) active.blur();
     if (document.querySelector('[data-testid="procurement-sheet"] .sheet-input[data-invalid="true"]')) throw new Error("Perbaiki input sel sebelum menyimpan.");
     if (volumeErrorRef.current) throw new Error(volumeErrorRef.current);
-    const current = snapshotRef.current;
     if (!current) return;
     const request: SaveRequest = pendingSave.current ?? {
       expectedVersion: savedVersion.current, mutationId: id<"mutation">(), snapshot: current,
@@ -496,7 +500,7 @@ export function ProcurementWorkspace() {
             const next = createAnalysisWorkbook({ ...(projectId ? { projectId } : {}), projectName,
               analysisName: field(form, "analysisName"), material: field(form, "material"), customer: field(form, "customer"), location: field(form, "location"),
               analysisDate: field(form, "analysisDate"), marketing: field(form, "marketing"), payment: field(form, "payment"),
-              economicPrice: field(form, "economicPrice"), source: field(form, "source"), document: field(form, "document"), discount: field(form, "discount"),
+              economicPrice: field(form, "economicPrice"), source: field(form, "source"), document: field(form, "document"),
               volume: field(form, "volume"),
             });
             edit(next, null);
@@ -531,7 +535,6 @@ export function ProcurementWorkspace() {
               <label><span>Pembayaran</span><input name="payment" placeholder="Contoh: 30 hari" /></label>
               <label><span>Harga Keekonomian</span><input name="economicPrice" placeholder="Isi jika tersedia" /></label>
               <label><span>Dokumen</span><input name="document" placeholder="Nomor atau keterangan dokumen" /></label>
-              <label><span>Diskon</span><input name="discount" placeholder="Isi jika tersedia" /></label>
             </fieldset>
           </CardContent>
           <CardFooter className="project-create-actions">

@@ -67,9 +67,6 @@ export const SOURCE_SHEETS: readonly { name: string; cells: Readonly<Record<stri
       "H7": {
         "number": "22450.0"
       },
-      "J7": {
-        "text": "Diskon"
-      },
       "G8": {
         "text": "HARGA INCLUDE"
       },
@@ -736,9 +733,6 @@ export const SOURCE_SHEETS: readonly { name: string; cells: Readonly<Record<stri
       },
       "H6": {
         "number": "22450.0"
-      },
-      "J6": {
-        "text": "Diskon"
       },
       "G7": {
         "text": "HARGA INCLUDE"

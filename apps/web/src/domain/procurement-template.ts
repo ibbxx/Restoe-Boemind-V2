@@ -14,8 +14,32 @@ import { OPERATIONAL_DECIMAL_POLICY, OPERATIONAL_POLICY_VERSION_ID } from "./cal
 
 export const units: Record<CellPresentation["unit"], Unit> = { text: {}, "1": {}, "IDR/L": { money: 1, volume: -1 }, L: { volume: 1 }, IDR: { money: 1 } };
 export const cellsOf = (s: WorkbookSnapshot) => s.worksheets.flatMap(w => w.tables.flatMap(t => t.cells));
+
+function repairLegacyVendorTotals(s: WorkbookSnapshot): WorkbookSnapshot {
+  const byId = new Map(cellsOf(s).map(cell => [cell.id, cell]));
+  const vendorFields = s.worksheets.filter(w => w.stage === "EVALUASI_VENDOR").flatMap(w => w.tables.flatMap(table => table.cells.map(cell => ({
+    cell, label: table.rows.find(row => row.id === cell.rowId)?.label ?? "",
+  }))));
+  const repaired = new Map(s.formulas.flatMap(formula => {
+    const target = byId.get(formula.targetCellId);
+    const table = target && s.worksheets.find(w => w.stage === "EVALUASI_VENDOR")?.tables.find(t => t.id === target.tableId);
+    const row = table?.rows.find(item => item.id === target?.rowId);
+    if (!target || !table || !row?.label.includes("|vendor:") || !row.label.endsWith(":TOTAL")) return [];
+    const offerId = row.label.match(/\|vendor:([^:]+):TOTAL$/)?.[1];
+    if (!offerId) return [];
+    const members = ["Harga Dasar", "PPN", "PBBKB", "PPH", "OAT", "PPN OAT", "BPH"].map(label =>
+      vendorFields.find(field => field.label.endsWith(`|vendor:${offerId}:${label}`))?.cell.id);
+    if (members.some(member => !member)) return [];
+    const coreMembers = members.slice(0, -1) as StableId<"cell">[];
+    if (formula.referenceCellIds.length !== coreMembers.length || coreMembers.some(member => !formula.referenceCellIds.includes(member))) return [];
+    const expression = `SUM(${members.map(member => `@{${member}}`).join(",")})`;
+    return formula.expression === expression ? [] : [[formula.id, { ...formula, expression, referenceCellIds: members as StableId<"cell">[] }] as const];
+  }));
+  return repaired.size ? changeWorkbook(s, { formulas: s.formulas.map(formula => repaired.get(formula.id) ?? formula) }) : s;
+}
+
 export function prepareNumericBlanks(s: WorkbookSnapshot): WorkbookSnapshot {
-  if (!s.workbook) return s;
+  if (!s.workbook) return repairLegacyVendorTotals(s);
   const byId = new Map(cellsOf(s).map(c => [c.id, c]));
   const numericBlanks = new Set(s.workbook.cells.filter(p => {
     const source = byId.get(p.cellId)?.source;
@@ -25,14 +49,13 @@ export function prepareNumericBlanks(s: WorkbookSnapshot): WorkbookSnapshot {
   const presentations = new Map(s.workbook.cells.map(p => [p.cellId, p]));
   const addresses = new Map(s.workbook.cells.map(p => [p.address, p.cellId]));
   const repaired = new Map(s.formulas.flatMap(formula => {
-    if (formula.sourceKind !== "WORKBOOK_SOURCE" || formula.provenance?.address !== "E17") return [];
+    if (formula.sourceKind !== "WORKBOOK_SOURCE") return [];
     const target = byId.get(formula.targetCellId), address = presentations.get(formula.targetCellId)?.address;
-    if (!target || !address || !/^[A-Z]+17$/.test(address)) return [];
-    const offer = s.workbook!.offers.find(o => o.columnId === target.columnId);
-    if (address !== "E17" && offer?.pattern !== "E") return [];
+    const vendorTable = target && s.worksheets.find(w => w.stage === "EVALUASI_VENDOR")?.tables.find(t => t.id === target.tableId);
+    if (!target || !address || !vendorTable || !/^[A-Z]+17$/.test(address)) return [];
     const column = address.slice(0, -2);
     const members = Array.from({ length: 7 }, (_, index) => addresses.get(column + (index + 10)));
-    if (members.some(member => !member || byId.get(member)?.tableId !== target.tableId)) return [];
+    if (members.some(member => !member || byId.get(member)?.tableId !== vendorTable.id)) return [];
     const expression = `SUM(${members.map(member => `@{${member}}`).join(",")})`;
     return formula.expression === expression ? [] : [[formula.id, { ...formula, expression,
       referenceCellIds: members as StableId<"cell">[] }] as const];
@@ -107,7 +130,7 @@ export function createProcurementWorkbook(projectName: string, analysisName: str
         if (profile === "SOLAR_BAWAH" && stage === "KONVERSI_JAGAD" && r >= 37) { kind = "BLANK"; input = { kind: "INPUT", input: { kind: "TEXT", text: "" } }; }
         const cell: CellSnapshot = { id: id<"cell">(), tableId, rowId: row.id, columnId: column.id, scope: stage === "EVALUASI_VENDOR" ? "SHARED" : profile, source: input };
         cells.push(cell); byAddress.set(address, cell);
-        if (profile === "SOLAR_BAWAH" && col + r === "B23") input = { kind: "INPUT", input: { kind: "TEXT", text: "Konversi Satuan Jagad" } };
+        if (profile === "SOLAR_BAWAH" && col + r === "B23") input = { kind: "INPUT", input: { kind: "TEXT", text: "Konversi Satuan" } };
         if (profile === "SOLAR_BAWAH" && ["B27", "C29"].includes(col + r)) input = { kind: "INPUT", input: { kind: "TEXT", text: col === "B" ? "Nama Supplier :" : "Harga Supplier" } };
         cells[cells.length - 1] = { ...cell, source: input }; byAddress.set(address, cells[cells.length - 1]!);
         const tone = stage === "AHS" ? r <= 8 ? "yellow" : r <= 13 ? "green" : r <= 33 ? "red" : r <= 38 ? "gray" : "plain" : stage === "KONVERSI_JAGAD" && r === 42 && col !== "D" ? "gray" : "plain";
@@ -151,7 +174,7 @@ export function createProcurementWorkbook(projectName: string, analysisName: str
     cellIds: worksheets.flatMap(w => w.tables.flatMap(t => t.cells)).filter(c => c.scope === profile).map(c => c.id),
     formulaIds: formulas.filter(f => worksheets.flatMap(w => w.tables.flatMap(t => t.cells)).find(c => c.id === f.targetCellId)?.scope === profile).map(f => f.id),
   }])) as unknown as WorkbookSnapshot["profiles"] });
-  return configureTemplate(snapshot, OPERATIONAL_DECIMAL_POLICY, null);
+  return prepareNumericBlanks(configureTemplate(snapshot, OPERATIONAL_DECIMAL_POLICY, null));
 }
 
 export function configureTemplate(s: WorkbookSnapshot, decimal: DecimalPolicy, solver: DynamicWorkbook["solver"]) {

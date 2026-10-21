@@ -36,7 +36,7 @@ test("analysis name, status and period filters combine without changing source d
   const filters = { ...readProjectLocation(""), analysisQuery: " oktober ", status: "HOLD" as const, period: analysis.period };
   assert.equal(matchesAnalysis(analysis, filters), true);
   assert.equal(matchesAnalysis(analysis, { ...filters, analysisQuery: "November" }), false);
-  assert.equal(matchesAnalysis(analysis, { ...filters, status: "ACTIVE" }), false);
+  assert.equal(matchesAnalysis(analysis, { ...filters, status: "CANCELLED" }), false);
   assert.equal(matchesAnalysis(analysis, { ...filters, period: "P1-OKT-2026" }), false);
   assert.equal(matchesAnalysis(analysis, readProjectLocation("")), true);
 });
