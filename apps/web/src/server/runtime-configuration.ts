@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { ServiceUnavailableError, SupabaseAuthenticator } from "./supabase-auth.ts";
 
 const localHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -30,5 +32,8 @@ export function runtimeConfiguration(env: Readonly<Record<string, string | undef
   }
   if (!local && (!database.username || !database.password)) throw new ServiceUnavailableError("Database credentials are not configured.");
   return { databaseUrl: database.href, authUrl: auth.url.origin, publicKey: auth.publicKey, project, pooler,
-    ssl: local ? false as const : "verify-full" as const };
+    ssl: local ? false as const : {
+      ca: readFileSync(join(process.cwd(), "certs/supabase-prod-ca-2021.crt"), "utf8"),
+      rejectUnauthorized: true as const,
+    } };
 }
