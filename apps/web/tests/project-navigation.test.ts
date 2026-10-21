@@ -1,6 +1,42 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { analysisListUrl, matchesAnalysis, matchesName, projectLocationUrl, readProjectLocation } from "../src/ui/project-navigation.ts";
+import { analysisListUrl, loadWorkspaceLocation, matchesAnalysis, matchesName, projectLocationUrl, readProjectLocation } from "../src/ui/project-navigation.ts";
+
+test("direct analysis starts both requests and becomes ready before the project list", async () => {
+  const projects = Promise.withResolvers<void>();
+  const calls: string[] = [];
+  await loadWorkspaceLocation(readProjectLocation("?analysisId=analysis-1"), () => {
+    calls.push("projects"); return projects.promise;
+  }, async () => { calls.push("analysis"); }, cause => { throw cause; });
+  assert.deepEqual(calls, ["projects", "analysis"]);
+  projects.resolve();
+});
+
+test("project navigation waits for its access list and propagates foreground failures", async () => {
+  const projects = Promise.withResolvers<void>();
+  let restored = false;
+  const loading = loadWorkspaceLocation(readProjectLocation("?projectId=project-1"), () => projects.promise,
+    async () => { restored = true; }, cause => { throw cause; });
+  assert.equal(restored, false);
+  projects.resolve(); await loading;
+  assert.equal(restored, true);
+  const failure = new Error("project list unavailable");
+  await assert.rejects(loadWorkspaceLocation(readProjectLocation(""), async () => { throw failure; },
+    async () => { assert.fail("must not restore without projects"); }, cause => { throw cause; }), cause => cause === failure);
+});
+
+test("background project failure is reported without rejecting a loaded worksheet", async () => {
+  const projects = Promise.withResolvers<void>();
+  const errors: unknown[] = [];
+  const failure = new Error("project list unavailable");
+  await loadWorkspaceLocation(readProjectLocation("?analysisId=analysis-1"), () => projects.promise,
+    async () => {}, cause => { errors.push(cause); });
+  projects.reject(failure);
+  await Promise.resolve();
+  assert.deepEqual(errors, [failure]);
+  await assert.rejects(loadWorkspaceLocation(readProjectLocation("?analysisId=analysis-1"), async () => {},
+    async () => { throw failure; }, cause => { throw cause; }), cause => cause === failure);
+});
 
 test("project, worksheet and filters survive a URL round trip", () => {
   const location = { ...readProjectLocation(""), projectId: "project-1", analysisId: "analysis-1", projectQuery: "Tonasa & co", analysisQuery: "Oktober + baru", status: "HOLD" as const, period: "P2-OKT-2026" };

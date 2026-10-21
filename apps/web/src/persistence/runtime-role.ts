@@ -10,9 +10,12 @@ export class WorkbookUpgradeRequiredError extends Error {
 }
 
 // Check each transaction/connection, not just startup: pooled sessions and grants can change.
-export async function enterRuntimeRole(tx: postgres.TransactionSql): Promise<void> {
+export async function enterRuntimeRole(tx: postgres.TransactionSql, timings: Record<string, number> = {}): Promise<void> {
+  let started = performance.now();
   await tx`select set_config('search_path', 'pg_catalog, pg_temp', true),
     set_config('statement_timeout', '15s', true), set_config('row_security', 'on', true)`;
+  timings.db_setup = performance.now() - started;
+  started = performance.now();
   const [identity] = await tx`with recursive reachable(oid) as (
     select oid from pg_roles where rolname = session_user
     union select m.roleid from pg_auth_members m join reachable r on r.oid = m.member
@@ -25,12 +28,16 @@ export async function enterRuntimeRole(tx: postgres.TransactionSql): Promise<voi
     and not exists (select 1 from pg_auth_members where member = r.oid)
     as safe from pg_roles l cross join pg_roles r
     where l.rolname = session_user and r.rolname = 'procurement_runtime'`;
+  timings.db_identity = performance.now() - started;
   if (identity?.safe !== true) throw new RuntimeDatabaseRoleError();
+  started = performance.now();
   try { await tx`set local role procurement_runtime`; }
   catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "42501") throw new RuntimeDatabaseRoleError();
     throw error;
   }
+  timings.db_role = performance.now() - started;
+  started = performance.now();
   const [privileges] = await tx`with actors as (
     select oid from pg_roles where rolname in (session_user, current_user)
   ), objects as (
@@ -82,6 +89,7 @@ export async function enterRuntimeRole(tx: postgres.TransactionSql): Promise<voi
       where (a.grantee = 0 or a.grantee in (select oid from actors)) and a.is_grantable)
     as safe, exists (select 1 from information_schema.columns where table_schema = 'procurement'
       and table_name = 'current_workbooks' and column_name = 'data') as storage_ready`;
+  timings.db_privileges = performance.now() - started;
   if (privileges?.storage_ready !== true) throw new WorkbookUpgradeRequiredError();
   if (privileges?.safe !== true) throw new RuntimeDatabaseRoleError();
 }

@@ -12,6 +12,7 @@ import { addAhsItem, ahsGroups, ahsRoleCell } from "../src/domain/ahs-groups.ts"
 import { setCellFormula } from "../src/domain/structure.ts";
 import { FormulaEngine } from "../src/engine/formula-engine.ts";
 import { canvasCellAddresses } from "../src/domain/canvas-address.ts";
+import { readFileSync } from "node:fs";
 
 register("data:text/javascript," + encodeURIComponent(`
   import { readFile } from "node:fs/promises";
@@ -25,6 +26,22 @@ register("data:text/javascript," + encodeURIComponent(`
 `), import.meta.url);
 const { WorksheetSurface } = await import("../src/ui/worksheet-surface.tsx");
 const { MenuToggleIcon } = await import("../src/components/ui/menu-toggle-icon.tsx");
+const { LoadingIndicator } = await import("../src/ui/loading-indicator.tsx");
+
+test("workspace retains one full-screen animated loader with the original blur", () => {
+  const html = renderToStaticMarkup(createElement(LoadingIndicator, { active: true, label: "Menyimpan perubahan…" }));
+  assert(html.includes('class="app-loading"'));
+  assert(html.includes("<canvas"));
+  assert(html.includes("Menyimpan perubahan…"));
+  assert(!html.includes("app-loading-inline"));
+  const source = readFileSync(new URL("../src/ui/procurement-workspace.tsx", import.meta.url), "utf8");
+  assert.equal(source.match(/<LoadingIndicator\b/g)?.length, 1);
+  assert(source.includes('<LoadingIndicator active={busy || preparingPrint} label={loadingLabel} />'));
+  assert(!source.includes("worksheet-operation-status"));
+  assert(!source.includes("workspace-loading"));
+  const css = readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
+  assert.match(css, /\.app-loading \{[^}]*position: fixed;[^}]*backdrop-filter: blur\(6px\)/);
+});
 
 test("menu icon exposes both animation states and a custom duration", () => {
   for (const open of [false, true]) {
@@ -35,6 +52,26 @@ test("menu icon exposes both animation states and a custom duration", () => {
 });
 
 for (const layout of ["template", "legacy"] as const) for (const profile of ["INU", "SOLAR_BAWAH"] as const) {
+  test(`${layout}/${profile}: saving locks edits and calculation blocks print only`, () => {
+    const base = layout === "template" ? createProcurementWorkbook("Project", "Analysis") : prepareLegacySheet(emptyWorkbook("Project", "Analysis"));
+    const snapshot = changeSheetProfile(connectAhsVolumes(makeAhsSaleInput(connectAhsHpp(base))), profile);
+    const configuration = snapshot.workbook?.configuration ?? legacyConfiguration(snapshot, null);
+    const saving = renderToStaticMarkup(createElement(WorksheetSurface, {
+      snapshot, configuration, run: null, disabled: true, saving: true, onSave() {},
+    }));
+    assert.match(saving, /class="sheet-viewport" aria-label="Lembar procurement" tabindex="0"/);
+    assert.match(saving, /aria-busy="true" disabled="">Menyimpan…<\/button>/);
+    assert.match(saving, /<input[^>]*class="sheet-input"[^>]*disabled=""/);
+    assert(!saving.includes('class="app-loading"'), "the surface must not duplicate the workspace loader");
+    const calculating = renderToStaticMarkup(createElement(WorksheetSurface, {
+      snapshot, configuration, run: null, disabled: false, calculating: true,
+    }));
+    assert(calculating.includes('data-calculating="true"'));
+    assert.match(calculating, /class="print-button"[^>]*disabled=""/);
+    assert.match(calculating, /<input[^>]*class="sheet-input"[^>]*>/);
+    assert(!/<input[^>]*class="sheet-input"[^>]*disabled=""/.test(calculating), "calculation must not lock editable cells");
+  });
+
   test(`${layout}/${profile}: one global AHS menu controls every section`, () => {
     const base = layout === "template" ? createProcurementWorkbook("Project", "Analysis") : prepareLegacySheet(emptyWorkbook("Project", "Analysis"));
     let snapshot = changeSheetProfile(connectAhsVolumes(makeAhsSaleInput(connectAhsHpp(base))), profile);

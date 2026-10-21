@@ -38,6 +38,7 @@ interface SurfaceProps {
   configuration: EngineConfiguration | null;
   disabled: boolean;
   saving?: boolean;
+  calculating?: boolean;
   onPrintLoading?: (preparing: boolean) => void;
   volumeError?: string;
   actor?: StableId<"user"> | null;
@@ -57,7 +58,7 @@ const normalized = (text: string) => text.trim().toLocaleLowerCase("id-ID");
 const numericText = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
 
 export function WorksheetSurface(props: SurfaceProps) {
-  const { snapshot, run, configuration, disabled, saving = false, onPrintLoading, volumeError, actor, onChange, onError, onEditing, onSave, analysisStatus, onAnalysisStatusChange, onInput, onSelectOffer, onRequestConfirm } = props;
+  const { snapshot, run, configuration, disabled, saving = false, calculating = false, onPrintLoading, volumeError, actor, onChange, onError, onEditing, onSave, analysisStatus, onAnalysisStatusChange, onInput, onSelectOffer, onRequestConfirm } = props;
 
   const [selectedCellId, setSelectedCellId] = useState<string | null>(null);
   const [highlightCellId, setHighlightCellId] = useState<string | null>(null);
@@ -113,6 +114,7 @@ export function WorksheetSurface(props: SurfaceProps) {
   }
 
   async function handlePrint() {
+    if (calculating) return;
     if (!snapshot || isPreparingPrint) return;
     if (volumeError) { setToolbarError(volumeError); return; }
     const selectionId = snapshot.workbook ? snapshot.workbook.selections[snapshot.activeProfile] : snapshot.selectedOfferId;
@@ -130,6 +132,11 @@ export function WorksheetSurface(props: SurfaceProps) {
       await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
       const sheet = sheetRef.current;
       if (!sheet) return;
+      // Blur may commit a new snapshot whose calculation has not painted yet.
+      while (sheet.dataset.calculating === "true") {
+        await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+        if (sheetRef.current !== sheet) return;
+      }
       if (sheet.querySelector('.sheet-input[data-invalid="true"]')) throw new Error("Perbaiki input sel sebelum mencetak.");
       let indexes: number[];
       if (snapshot.workbook) {
@@ -932,7 +939,7 @@ export function WorksheetSurface(props: SurfaceProps) {
         {removeVendorDialog}
         {addComponentDialog}
         {removeComponentDialog}
-        <div ref={sheetRef} className="procurement-sheet" style={sheetStyle} data-testid="procurement-sheet" data-print-title={printTitle}>
+        <div ref={sheetRef} className="procurement-sheet" style={sheetStyle} data-testid="procurement-sheet" data-print-title={printTitle} data-calculating={calculating}>
           <header className="sheet-overview">
             <div><p className="eyebrow">PROCUREMENT WORKSPACE · {isINU ? "INU" : "SOLAR BAWAH"}</p>
               <h2>Evaluasi Vendor & Analisis Harga Satuan</h2>
@@ -942,7 +949,7 @@ export function WorksheetSurface(props: SurfaceProps) {
               <div><dt>Harga jual (Rp/L)</dt><dd>{overviewValue("sale")}</dd></div>
               <div><dt>Laba bersih (Rp)</dt><dd>{overviewValue("profit")}</dd></div>
             </dl>
-            <button type="button" className="print-button" aria-label={isPreparingPrint ? "Menyiapkan cetakan" : "Cetak ke PDF"} title={isPreparingPrint ? "Menyiapkan cetakan" : "Cetak ke PDF"} disabled={disabled || isPreparingPrint} onClick={() => void handlePrint()}><Printer aria-hidden="true" /></button>
+            <button type="button" className="print-button" aria-label={isPreparingPrint ? "Menyiapkan cetakan" : "Cetak ke PDF"} title={isPreparingPrint ? "Menyiapkan cetakan" : "Cetak ke PDF"} disabled={disabled || calculating || isPreparingPrint} onClick={() => void handlePrint()}><Printer aria-hidden="true" /></button>
           </header>
           {run?.provisional && <p className="sheet-assumptions">Asumsi nol sementara: {run.provisional.assumedZeroCellIds.length
             ? run.provisional.assumedZeroCellIds.map(id => displayCellId(id, snapshot)).join(", ") : "tidak ada"}. Sel asli tetap kosong.</p>}
@@ -1169,7 +1176,7 @@ export function WorksheetSurface(props: SurfaceProps) {
       {removeVendorDialog}
       {addComponentDialog}
       {removeComponentDialog}
-      <div ref={sheetRef} className="procurement-sheet" style={sheetStyle} data-testid="procurement-sheet" data-print-title={printTitle}>
+      <div ref={sheetRef} className="procurement-sheet" style={sheetStyle} data-testid="procurement-sheet" data-print-title={printTitle} data-calculating={calculating}>
         <header className="sheet-overview">
           <div><p className="eyebrow">PROCUREMENT WORKSPACE · {isINU ? "INU" : "SOLAR BAWAH"}</p>
             <h2>Evaluasi Vendor &amp; Analisis Harga Satuan</h2>
@@ -1180,7 +1187,7 @@ export function WorksheetSurface(props: SurfaceProps) {
             <div><dt>Harga jual (Rp/L)</dt><dd>{legacyOverviewValue("AHS", "Harga Jual · Harga Dasar")}</dd></div>
             <div><dt>Laba bersih (Rp)</dt><dd>{legacyOverviewValue("AHS", "LABA BERSIH")}</dd></div>
           </dl>
-          <button type="button" className="print-button" aria-label={isPreparingPrint ? "Menyiapkan cetakan" : "Cetak ke PDF"} title={isPreparingPrint ? "Menyiapkan cetakan" : "Cetak ke PDF"} disabled={disabled || isPreparingPrint} onClick={() => void handlePrint()}><Printer aria-hidden="true" /></button>
+          <button type="button" className="print-button" aria-label={isPreparingPrint ? "Menyiapkan cetakan" : "Cetak ke PDF"} title={isPreparingPrint ? "Menyiapkan cetakan" : "Cetak ke PDF"} disabled={disabled || calculating || isPreparingPrint} onClick={() => void handlePrint()}><Printer aria-hidden="true" /></button>
         </header>
         <div className="sheet-canvas-toolbar">
           <div className="toolbar-row formula-row">

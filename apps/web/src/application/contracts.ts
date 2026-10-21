@@ -29,6 +29,9 @@ export interface SavedWorkbook {
   readonly savedAt: string;
   readonly savedBy: StableId<"user">;
 }
+export interface LoadedWorkbook extends SavedWorkbook {
+  readonly analysisMetadata: AnalysisMetadata;
+}
 export interface SaveRequest {
   readonly expectedVersion: StableId<"version"> | null;
   readonly mutationId: StableId<"mutation">;

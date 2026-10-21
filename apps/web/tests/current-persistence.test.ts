@@ -228,12 +228,17 @@ test("current-only migration, repeated Save, isolation and AHS round trips", asy
       const results = await Promise.all(["DRAFT", "HOLD"].map(status => repo.updateAnalysis(dynamic.analysisId, actor, "Dynamic renamed", status, updated.version, id<"mutation">())));
       assert.equal(results.filter(result => !("code" in result)).length, 1);
       assert.equal(results.filter(result => "code" in result && result.code === "STALE_VERSION").length, 1);
-      await assert.rejects(repoOther.updateAnalysis(dynamic.analysisId, other, "Foreign", "HOLD", updated.version, id<"mutation">()));
+      const staleOther = await repoOther.updateAnalysis(dynamic.analysisId, other, "Dynamic renamed", "HOLD", updated.version, id<"mutation">());
+      assert("code" in staleOther && staleOther.code === "STALE_VERSION");
+      const shared = await repoOther.current(dynamic.analysisId); assert(shared);
+      const sharedUpdate = await repoOther.updateAnalysis(dynamic.analysisId, other, "Dynamic renamed", "HOLD", shared.version, id<"mutation">());
+      assert(!("code" in sharedUpdate));
+      assert.equal((await repo.current(dynamic.analysisId))!.version, sharedUpdate.version);
     });
     await t.test("simultaneous Saves accept one writer and preserve the latest committed data", async () => {
       const saved = await repo.current(dynamic.analysisId); assert(saved);
-      const results = await Promise.all([1, 2].map(n => repo.save({ snapshot: numericCell(saved.snapshot, dynamic.workbook!.offers[0]!.baseCellId, String(22000+n)),
-        configuration: saved.configuration, expectedVersion: saved.version, mutationId: id<"mutation">() }, actor)));
+      const results = await Promise.all([{ repository: repo, user: actor }, { repository: repoOther, user: other }].map(({ repository, user }, n) => repository.save({ snapshot: numericCell(saved.snapshot, dynamic.workbook!.offers[0]!.baseCellId, String(22001+n)),
+        configuration: saved.configuration, expectedVersion: saved.version, mutationId: id<"mutation">() }, user)));
       assert.equal(results.filter(r => r.status === "SAVED").length, 1);
       assert.equal(results.filter(r => r.status === "CONFLICT").length, 1);
       const winner = results.find(r => r.status === "SAVED"); assert(winner?.status === "SAVED");
@@ -308,7 +313,8 @@ test("current-only migration, repeated Save, isolation and AHS round trips", asy
       assert.equal((await repo.listAnalyses(dynamic.projectId, { query: "100%_" })).total, 1);
       assert.equal((await repo.listAnalyses(dynamic.projectId, { query: "Paged", status: "HOLD" })).total, 3);
       assert.equal((await repo.listAnalyses(dynamic.projectId, { query: "Paged", period: "NONE" })).total, 6);
-      assert.equal((await repoOther.listAnalyses(dynamic.projectId, { after: first.nextCursor })).total, 0);
+      assert.deepEqual(await repoOther.listAnalyses(dynamic.projectId, { ...options, after: first.nextCursor }), second);
+      assert.deepEqual(await repoOther.listProjects(), await repo.listProjects());
       assert.equal((await repo.listAnalyses(dynamic.projectId, { analysisId: third.items[0]!.id })).items[0]!.id, third.items[0]!.id);
       for (const query of [{ limit: 0 }, { limit: 101 }, { after: "bad" }, { status: "BAD" }, { period: "invalid" }, { after: first.nextCursor, before: second.previousCursor }]) {
         await assert.rejects(repo.listAnalyses(dynamic.projectId, query));
@@ -534,13 +540,30 @@ test("current-only migration, repeated Save, isolation and AHS round trips", asy
       const response = await handler(new Request("http://localhost/api/workbook", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ operation: "SAVE", request }) }));
       assert.equal(response.status, 200);
       const loaded = await handler(new Request(`http://localhost/api/workbook?analysisId=${dynamic.analysisId}`));
-      assert.equal(loaded.status, 200); assert.equal((await loaded.json()).snapshot.analysisId, dynamic.analysisId);
+      assert.equal(loaded.status, 200);
+      const loadedBody = await loaded.json();
+      assert.equal(loadedBody.snapshot.analysisId, dynamic.analysisId);
+      assert.equal(loadedBody.analysisMetadata.id, dynamic.analysisId);
+      assert.equal(loadedBody.analysisMetadata.version, loadedBody.version);
+      assert.equal(loadedBody.analysisMetadata.name, loadedBody.snapshot.analysis.analysis.name);
+      assert.equal(loadedBody.analysisMetadata.status, (await repo.listAnalyses(dynamic.projectId, { analysisId: dynamic.analysisId })).items[0]!.status);
+      const timing = loaded.headers.get("Server-Timing")!;
+      for (const stage of ["auth", "db_connect", "db_setup", "db_identity", "db_role", "db_privileges", "db_claims", "db_query", "decode", "stored_validation", "serialize", "total"]) {
+        assert.match(timing, new RegExp(`(?:^|, )${stage};dur=\\d+\\.\\d{2}(?:,|$)`));
+      }
+      const held = await handler(new Request(`http://localhost/api/workbook?analysisId=${dynamic.analysisId}`));
+      assert.equal((await held.json()).analysisMetadata.version, loadedBody.version);
       const metadata = { operation: "UPDATE_ANALYSIS", analysisId: dynamic.analysisId, name: saved.snapshot.analysis.analysis.name, status: "HOLD" };
       const update = (command: object) => handler(new Request("http://localhost/api/workbook", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(command) }));
       assert.equal((await update(metadata)).status, 400);
       const command = { ...metadata, expectedVersion: saved.version, mutationId: id<"mutation">() };
       const updated = await update(command); assert.equal(updated.status, 200);
       const updatedBody = await updated.json(); assert.notEqual(updatedBody.version, saved.version);
+      const readStart = statements.length;
+      const synchronized = await (await handler(new Request(`http://localhost/api/workbook?analysisId=${dynamic.analysisId}`))).json();
+      assert.deepEqual(synchronized.analysisMetadata, updatedBody);
+      assert.equal(synchronized.version, updatedBody.version);
+      assert(!statements.slice(readStart).some(sql => sql.includes("with scoped as materialized")));
       assert.deepEqual(await (await update(command)).json(), updatedBody);
       assert.equal((await update({ ...command, name: "Different" })).status, 400);
       assert.equal((await update({ ...command, mutationId: id<"mutation">() })).status, 409);

@@ -38,6 +38,39 @@ Tes persistence membutuhkan PostgreSQL 17 lokal; `PG_BIN` opsional. Harness mema
 
 Pembersihan setelah refactor menghapus editor/fondasi lama, repository in-memory dan kontraknya, wrapper worker solver tanpa pemanggil, serialisasi arsip, helper yang tidak dipakai, serta CSS editor lama. Solver aktif tetap melalui FormulaEngine. Tidak ada dependensi paket khusus histori yang tersisa. Tes juga mencakup penolakan operasi histori lama, hubungan HPP–Biaya, harga jual manual, PPN volume besar, dan pilihan/volume profil independen setelah Save/reload.
 
+## Diagnosis waktu loading dan Simpan
+
+GET workbook mengembalikan `analysisMetadata` (nama, status, versi) dari SELECT yang sama dengan workbook. Editor tidak lagi menunggu request daftar analisis kedua. Kontrak Simpan serta `repository.current()` tetap sama; tidak ada migration untuk perubahan ini.
+
+Setelah sesi valid, URL langsung Analysis mengambil workbook dan daftar Project secara paralel. Worksheet siap tanpa menunggu daftar Project; navigasi kembali ke Project tetap menunggu daftar akses bila request itu belum selesai. Kegagalan request latar belakang dilaporkan tanpa membuang worksheet, sedangkan sesi tidak valid tetap menutup akses. Animasi logo dan blur layar penuh tetap memakai tampilan semula saat loading, Simpan, dan persiapan cetak; tidak ada loader inline atau banner baru yang mengubah layout. Pesan kosong tidak ditampilkan sebelum request selesai.
+
+Simpan tetap menampilkan animasi/blur dengan label `Menyimpan perubahan…`, sementara edit, navigasi, dan Save ulang dikunci sampai request selesai. Status sukses hanya muncul sesudah respons commit. Kalkulasi transient dijadwalkan setelah kesempatan paint, memakai status aksesibel terpisah tanpa banner tambahan, membuang pekerjaan yang sudah digantikan, dan tidak memakai hasil snapshot sebelumnya. Cetak menunggu kalkulasi terbaru, termasuk bila blur saat mencetak baru mengonfirmasi input. Ini bukan Worker: perhitungan tetap memakai thread browser dan FormulaEngine yang sama, tanpa mengubah formula/presisi. Kalkulasi tidak memperpanjang loader Simpan.
+
+Di DevTools Network, periksa `Server-Timing` pada `/api/workbook`:
+
+- `auth`: validasi sesi ke Supabase Auth.
+- `db_connect`: menunggu pool, pembentukan koneksi bila diperlukan, dan BEGIN.
+- `db_setup`, `db_identity`, `db_role`, `db_privileges`, `db_claims`: pemeriksaan keamanan per transaksi.
+- `db_query`, `decode`, `stored_validation`: pembacaan dan validasi workbook; daftar proyek/analisis hanya mempunyai tahap query.
+- `validation`, `encode`, `db_write`, `persistence`: tahap Simpan, bila dijalankan.
+- `db_finish`: COMMIT/ROLLBACK; `serialize`: pembentukan respons JSON; `total`: handler sesudah mulai berjalan.
+
+`db_transaction` dan `persistence` mencakup tahap-tahap di dalamnya, sehingga jangan menjumlahkan semua metrik. `total` tidak mencakup cold start sebelum handler, transfer respons ke browser, atau rendering browser. Durasi query mencakup perjalanan jaringan, bukan hanya eksekusi SQL. Pemeriksaan keamanan tidak di-cache atau dilewati.
+
+Durasi browser tersedia sebagai User Timing berawalan `procurement:` di panel Performance. Tersimpan hanya sampel terakhir per tahap, tanpa isi workbook, ID, URL atau token. Untuk melihatnya melalui Console:
+
+```js
+console.table(performance.getEntriesByType("measure")
+  .filter(entry => entry.name.startsWith("procurement:"))
+  .map(entry => ({ tahap: entry.name, milidetik: entry.duration.toFixed(1) })));
+```
+
+`normalize` mengukur penyiapan workbook; `calculation` mengukur FormulaEngine; `load` berakhir ketika state siap ditampilkan. `worksheet-render` dan `save-render` berakhir setelah dua animation frame sesudah commit React, sebagai perkiraan waktu tampilan siap. `save-input`, `save-serialize`, `save-request`, `save-response` memisahkan konfirmasi input, serialisasi request, HTTP beserta parsing respons, dan pembaruan state. `save` mencakup seluruh alur Simpan sebelum rendering berikutnya.
+
+Pemeriksaan manual: bandingkan akses pertama dan berulang untuk buka proyek, buka analisis dan Simpan. Gunakan kondisi jaringan/perangkat yang sama, catat median dan rentang dari sedikitnya lima percobaan sebelum/sesudah; jangan menyamakan hasil lokal dengan Vercel. Pembukaan analisis hanya mengambil satu request workbook, tanpa request metadata tambahan; perlambat request daftar proyek untuk memastikan worksheet tidak ikut tertahan. Uji Simpan saat kursor masih berada pada input terakhir, Simpan tanpa perubahan, reload, konflik dua akun/tab, retry, navigasi lambat dan pergantian sesi; pastikan status/nilai/formula tidak berubah. Pengukuran aktual Vercel serta penerimaan visual tetap dilakukan setelah deployment.
+
+Gerbang rilis: verifikasi kecocokan schema dan RLS cloud dengan akses bersama yang digunakan kode, khususnya migration `20261021073232_shared_workspace_data.sql`. Jangan menjalankan seluruh migration secara membabi buta atau menerapkan perubahan cloud otomatis saat startup. Penerapan cloud memerlukan persetujuan operator terpisah serta backup/verifikasi; perubahan loading ini tidak mengubah schema atau policy.
+
 ## Cutover
 
 Migration `supabase/migrations/20261019071911_current_only_procurement.sql` baru dibuat dan diverifikasi lokal, belum diterapkan ke cloud. Migration tersebut mempertahankan current Analysis dan menghapus arsip lama secara fisik dalam transaksi. Hentikan writer lama sebelum penerapan operator; jangan menjalankan aplikasi baru terhadap schema lama. Aplikasi tidak melakukan migration saat startup.

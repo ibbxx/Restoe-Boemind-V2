@@ -5,7 +5,7 @@ import { object, requireCondition } from "../domain/validation.ts";
 import type { SessionAuthenticator } from "./supabase-auth.ts";
 import { AuthenticationError, ServiceUnavailableError } from "./supabase-auth.ts";
 
-type Repository = Pick<PostgresWorkbookRepository, "save" | "current" | "listProjects" | "listAnalyses" | "deleteAnalysis" | "deleteProject" | "updateAnalysis"> & { readonly timings?: Readonly<Record<string, number>> };
+type Repository = Pick<PostgresWorkbookRepository, "save" | "currentWithMetadata" | "listProjects" | "listAnalyses" | "deleteAnalysis" | "deleteProject" | "updateAnalysis"> & { readonly timings?: Readonly<Record<string, number>> };
 type RepositoryFactory = (actorId: Awaited<ReturnType<SessionAuthenticator["authenticate"]>>) => Repository;
 const MAX_BODY = 5 * 1024 * 1024;
 class PayloadTooLargeError extends Error {}
@@ -34,16 +34,16 @@ export function createWorkbookHandler(auth: SessionAuthenticator, factory: Repos
     const started = performance.now();
     let authDuration = 0, repository: Repository | undefined;
     const respond = (data: unknown, status = 200) => {
+      const serializeStarted = performance.now();
       const response = Response.json(data, { status, headers: { "Cache-Control": "private, no-store", "Vary": "Authorization" } });
-      const timings = { auth: authDuration, ...repository?.timings, total: performance.now() - started };
+      const timings = { auth: authDuration, ...repository?.timings, serialize: performance.now() - serializeStarted, total: performance.now() - started };
       response.headers.set("Server-Timing", Object.entries(timings).filter(([, duration]) => Number.isFinite(duration))
         .map(([name, duration]) => `${name};dur=${duration.toFixed(2)}`).join(", "));
       return response;
     };
     try {
       if (!["GET", "POST", "DELETE"].includes(request.method)) return respond({ code: "METHOD_NOT_ALLOWED" }, 405);
-      const actorId = await auth.authenticate(request);
-      authDuration = performance.now() - started;
+      const actorId = await auth.authenticate(request).finally(() => { authDuration = performance.now() - started; });
       repository = factory(actorId);
       if (request.method === "GET") {
         const params = new URL(request.url).searchParams;
@@ -54,7 +54,7 @@ export function createWorkbookHandler(auth: SessionAuthenticator, factory: Repos
             after: params.get("after"), before: params.get("before"), limit: params.get("limit"),
             query: params.get("query"), status: params.get("status"), period: params.get("period"), analysisId,
           }));
-          case "current": return respond(await repository.current(analysisId));
+          case "current": return respond(await repository.currentWithMetadata(analysisId));
           default: throw new TypeError("Unknown view.");
         }
       }

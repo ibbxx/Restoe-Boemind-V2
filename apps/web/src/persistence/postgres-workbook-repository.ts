@@ -1,6 +1,6 @@
 import type postgres from "postgres";
 import { createHash } from "node:crypto";
-import type { AnalysisListItem, AnalysisPage, AnalysisUpdateOutcome, SavedWorkbook, SaveOutcome } from "../application/contracts.ts";
+import type { AnalysisListItem, AnalysisPage, AnalysisUpdateOutcome, AnalysisMetadata, LoadedWorkbook, SavedWorkbook, SaveOutcome } from "../application/contracts.ts";
 import { createStableId, parseStableId } from "../domain/ids.ts";
 import type { StableId } from "../domain/ids.ts";
 import { canonicalJson, freeze } from "../domain/snapshots.ts";
@@ -16,7 +16,7 @@ import type { AnalysisStatus } from "../domain/analysis-status.ts";
 
 type Tx = postgres.TransactionSql;
 const SHARED_WORKSPACE_OWNER_ID = "00000000-0000-4000-8000-000000000001" as StableId<"user">;
-type CurrentRow = { data: unknown; version: string; analysis_name: string; project_name: string;
+type CurrentRow = { data: unknown; version: string; analysis_name: string; analysis_status: AnalysisStatus; project_name: string;
   saved_at: Date; saved_by: string; mutation_id: string; request_signature: string; project_id: string };
 export class AccessDeniedError extends Error {
   constructor() { super("Resource unavailable or access denied."); }
@@ -27,40 +27,66 @@ export class PostgresWorkbookRepository {
   readonly timings: Record<string, number> = {};
   constructor(readonly sql: postgres.Sql, verifiedActorId: unknown) { this.actorId = parseStableId<"user">(verifiedActorId); }
 
-  async transaction<T>(work: (tx: Tx) => Promise<T>): Promise<T> {
-    return await this.sql.begin(async tx => {
-      await enterRuntimeRole(tx);
-      await tx`select set_config('request.jwt.claim.sub', ${this.actorId}, true),
-        set_config('request.jwt.claims', ${JSON.stringify({ sub: this.actorId, role: "authenticated" })}, true)`;
-      return await work(tx);
-    }) as T;
+  async #timed<T>(name: string, work: () => T | PromiseLike<T>): Promise<T> {
+    const started = performance.now();
+    try { return await work(); }
+    finally { this.timings[name] = (this.timings[name] ?? 0) + performance.now() - started; }
   }
 
-  async #current(tx: Tx, analysisId: StableId<"analysis">): Promise<CurrentRecord | null> {
-    const [row] = await tx<CurrentRow[]>`select c.data, c.version, c.saved_at, c.saved_by, c.mutation_id, c.request_signature, c.project_id,
-      a.name as analysis_name, p.name as project_name from procurement.current_workbooks c
+  async transaction<T>(work: (tx: Tx) => Promise<T>): Promise<T> {
+    const started = performance.now();
+    let finished: number | undefined;
+    try {
+      return await this.sql.begin(async tx => {
+        // Includes pool wait, connection setup and BEGIN, not just SQL execution.
+        this.timings.db_connect = performance.now() - started;
+        try {
+          await enterRuntimeRole(tx, this.timings);
+          await this.#timed("db_claims", () => tx`select set_config('request.jwt.claim.sub', ${this.actorId}, true),
+            set_config('request.jwt.claims', ${JSON.stringify({ sub: this.actorId, role: "authenticated" })}, true)`);
+          return await work(tx);
+        } finally { finished = performance.now(); }
+      }) as T;
+    } finally {
+      this.timings.db_transaction = performance.now() - started;
+      if (finished !== undefined) this.timings.db_finish = performance.now() - finished;
+    }
+  }
+
+  async #current(tx: Tx, analysisId: StableId<"analysis">): Promise<(CurrentRecord & { analysisMetadata: AnalysisMetadata }) | null> {
+    const [row] = await this.#timed("db_query", () => tx<CurrentRow[]>`select c.data, c.version, c.saved_at, c.saved_by, c.mutation_id, c.request_signature, c.project_id,
+      a.name as analysis_name, a.status as analysis_status, p.name as project_name from procurement.current_workbooks c
       join procurement.analyses a on a.id = c.analysis_id and a.owner_id = c.owner_id
-      join procurement.projects p on p.id = c.project_id and p.owner_id = c.owner_id where c.analysis_id = ${analysisId}`;
+      join procurement.projects p on p.id = c.project_id and p.owner_id = c.owner_id where c.analysis_id = ${analysisId}`);
     if (!row) return null;
-    const current = decodeWorkbook(row.data, { analysisId, projectId: row.project_id, analysisName: row.analysis_name, projectName: row.project_name });
-    const workbook = captureSavedWorkbook({ ...current,
-      version: parseStableId<"version">(row.version), savedAt: new Date(row.saved_at).toISOString(), savedBy: parseStableId<"user">(row.saved_by) });
+    const current = await this.#timed("decode", () => decodeWorkbook(row.data, { analysisId, projectId: row.project_id, analysisName: row.analysis_name, projectName: row.project_name }));
+    const workbook = await this.#timed("stored_validation", () => captureSavedWorkbook({ ...current,
+      version: parseStableId<"version">(row.version), savedAt: new Date(row.saved_at).toISOString(), savedBy: parseStableId<"user">(row.saved_by) }));
     requireCondition(workbook.snapshot.analysisId === analysisId && workbook.snapshot.projectId === row.project_id, "Invalid stored workbook.");
-    return { workbook, mutationId: parseStableId<"mutation">(row.mutation_id), signature: row.request_signature };
+    requireCondition(ANALYSIS_STATUSES.includes(row.analysis_status), "Invalid stored analysis status.");
+    return { workbook, mutationId: parseStableId<"mutation">(row.mutation_id), signature: row.request_signature,
+      analysisMetadata: { id: analysisId, name: row.analysis_name, status: row.analysis_status, version: workbook.version } };
   }
 
   async current(analysisId: unknown): Promise<SavedWorkbook | null> {
     const id = parseStableId<"analysis">(analysisId);
     return this.transaction(async tx => (await this.#current(tx, id))?.workbook ?? null);
   }
+  async currentWithMetadata(analysisId: unknown): Promise<LoadedWorkbook | null> {
+    const id = parseStableId<"analysis">(analysisId);
+    return this.transaction(async tx => {
+      const current = await this.#current(tx, id);
+      return current ? freeze({ ...current.workbook, analysisMetadata: current.analysisMetadata }) : null;
+    });
+  }
   async listProjects() {
-    return this.transaction(async tx => freeze([...(await tx<{ id: string; name: string }[]>`select id, name from procurement.projects order by id`)]));
+    return this.transaction(async tx => freeze([...(await this.#timed("db_query", () => tx<{ id: string; name: string }[]>`select id, name from procurement.projects order by id`))]));
   }
   async listAnalyses(projectId: unknown, options: AnalysisListQuery = {}): Promise<AnalysisPage> {
     const id = parseStableId<"project">(projectId);
     const q = parseAnalysisList(options);
     return this.transaction(async tx => {
-      const [result] = await tx<{ items: AnalysisListItem[]; total: number; periods: string[]; has_before: boolean; has_after: boolean }[]>`
+      const [result] = await this.#timed("db_query", () => tx<{ items: AnalysisListItem[]; total: number; periods: string[]; has_before: boolean; has_after: boolean }[]>`
         with scoped as materialized (
           select a.id, a.name, a.project_id, a.status, c.version,
             case when c.analysis_date is null then null else
@@ -84,7 +110,7 @@ export class PostgresWorkbookRepository {
           (select count(*)::int from filtered) as total,
           array(select distinct period from scoped where period is not null order by period) as periods,
           exists(select 1 from filtered where id < (select id from page order by id limit 1)) as has_before,
-          exists(select 1 from filtered where id > (select id from page order by id desc limit 1)) as has_after`;
+          exists(select 1 from filtered where id > (select id from page order by id desc limit 1)) as has_after`);
       const items = result!.items.map(item => ({ ...item, version: parseStableId<"version">(item.version) }));
       return freeze({ items, total: result!.total, periods: result!.periods,
         previousCursor: result!.has_before ? items[0]!.id : null,
@@ -185,13 +211,15 @@ export class PostgresWorkbookRepository {
           requireCondition(analysis.project_id === s.projectId, "An analysis cannot move to another project.");
         }
         const w = next.record.workbook;
+        const encodeStarted = performance.now();
         const data = tx.json(JSON.parse(canonicalJson(encodeWorkbook(w.snapshot, w.configuration))));
-        await tx`insert into procurement.current_workbooks
+        this.timings.encode = performance.now() - encodeStarted;
+        await this.#timed("db_write", () => tx`insert into procurement.current_workbooks
           (analysis_id, project_id, owner_id, data, version, saved_at, saved_by, mutation_id, request_signature)
           values (${s.analysisId}, ${s.projectId}, ${SHARED_WORKSPACE_OWNER_ID}, ${data}, ${w.version}, ${w.savedAt}, ${actor}, ${request.mutationId}, ${signature})
           on conflict (analysis_id) do update set data = excluded.data,
             version = excluded.version, saved_at = excluded.saved_at, saved_by = excluded.saved_by,
-            mutation_id = excluded.mutation_id, request_signature = excluded.request_signature`;
+            mutation_id = excluded.mutation_id, request_signature = excluded.request_signature`);
         return next.outcome;
       });
       this.timings.persistence = performance.now() - persistenceStarted;

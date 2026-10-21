@@ -24,6 +24,15 @@ export function readProjectLocation(search: string): ProjectLocation {
   };
 }
 
+export async function loadWorkspaceLocation(location: ProjectLocation, refreshProjects: () => Promise<void>,
+  restoreLocation: (location: ProjectLocation) => Promise<void>, onBackgroundError: (cause: unknown) => void): Promise<void> {
+  const projects = refreshProjects();
+  // A direct analysis link is authorized by the workbook endpoint, not the project list.
+  if (location.analysisId) void projects.catch(onBackgroundError);
+  else await projects;
+  await restoreLocation(location);
+}
+
 export function projectLocationUrl(location: ProjectLocation): string {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(location)) if (value) params.set(key, value);
