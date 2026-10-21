@@ -448,7 +448,7 @@ export function ProcurementWorkspace() {
     PPN: { project: "Proyek Pengadaan HSD - PPN", analysis: "Analisis Vendor - PPN" },
     "NON PPN": { project: "Proyek Pengadaan HSD - Non PPN", analysis: "Analisis Vendor - Non PPN" },
   };
-  const selectedDocumentExample = documentExamples[newDocumentType] ?? documentExamples["FULL DOC"];
+  const selectedDocumentExample = documentExamples[newDocumentType] ?? documentExamples["FULL DOC"]!;
 
   return <main className={actor ? "workbook-app" : "login-app"}>
     <header className="app-header" hidden={!actor}>

@@ -65,7 +65,7 @@ for (const row of result.rows) {
     let value = manual[label];
     if (vendor) {
       const index = snapshot.analysis.offers.findIndex(o => o.id === vendor[1]);
-      value = ({ "Harga Dasar": String(20000 + index * 250), "PBBKB": "0", "PPH": "0", "OAT": String(300 + index * 25), "PPN OAT": "0", "BPH": "0" } as Record<string, string>)[vendor[2]];
+      value = ({ "Harga Dasar": String(20000 + index * 250), "PBBKB": "0", "PPH": "0", "OAT": String(300 + index * 25), "PPN OAT": "0", "BPH": "0" } as Record<string, string>)[vendor[2]!];
     }
     if (value !== undefined) snapshot = updateCellInput(snapshot, cell.scope, cell.id, { kind: "NUMERIC_TEXT", text: value });
     else if (label === "Notes" || vendor?.[2] === "Notes") snapshot = updateCellInput(snapshot, cell.scope, cell.id,
