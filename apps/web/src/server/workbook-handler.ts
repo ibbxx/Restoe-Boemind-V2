@@ -50,7 +50,10 @@ export function createWorkbookHandler(auth: SessionAuthenticator, factory: Repos
         const analysisId = params.get("analysisId");
         switch (params.get("view") ?? "current") {
           case "projects": return respond(await repository.listProjects());
-          case "analyses": return respond(await repository.listAnalyses(params.get("projectId")));
+          case "analyses": return respond(await repository.listAnalyses(params.get("projectId"), {
+            after: params.get("after"), before: params.get("before"), limit: params.get("limit"),
+            query: params.get("query"), status: params.get("status"), period: params.get("period"), analysisId,
+          }));
           case "current": return respond(await repository.current(analysisId));
           default: throw new TypeError("Unknown view.");
         }
@@ -70,8 +73,9 @@ export function createWorkbookHandler(auth: SessionAuthenticator, factory: Repos
       const raw = await body(request);
       requireCondition(raw !== null && typeof raw === "object" && !Array.isArray(raw), "Expected an object.");
       if ((raw as Record<string, unknown>).operation === "UPDATE_ANALYSIS") {
-        const command = object(raw, ["operation", "analysisId", "name", "status"]);
-        return respond(await repository.updateAnalysis(command.analysisId, actorId, command.name, command.status));
+        const command = object(raw, ["operation", "analysisId", "name", "status", "expectedVersion", "mutationId"]);
+        const outcome = await repository.updateAnalysis(command.analysisId, actorId, command.name, command.status, command.expectedVersion, command.mutationId);
+        return respond(outcome, "code" in outcome ? outcome.status === "CONFLICT" ? 409 : 400 : 200);
       }
       const command = object(raw, ["operation", "request"]);
       requireCondition(command.operation === "SAVE", "Unknown operation.");

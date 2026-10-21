@@ -14,6 +14,7 @@ import { ahsVolumeSource, connectAhsVolumes } from "../src/domain/ahs-volume.ts"
 import { addAhsItem, ahsGroups, ahsCell, ahsRoleCell, prepareAhsRollups } from "../src/domain/ahs-groups.ts";
 import { addAhsField, ahsFields } from "../src/domain/ahs-fields.ts";
 import { currentSnapshot } from "../src/domain/current-workbook.ts";
+import { analysisPeriod } from "../src/domain/analysis-creation.ts";
 import { createStableId as id } from "../src/domain/ids.ts";
 import { canonicalJson } from "../src/domain/snapshots.ts";
 import type { WorkbookSnapshot } from "../src/domain/contracts.ts";
@@ -31,6 +32,7 @@ const migrationFiles = readdirSync(migrations).filter(f => f.endsWith(".sql")).s
 const currentOnlyMigration = migrationFiles.find(file => file.includes("20261019071911_current_only_procurement"))!;
 const deleteAnalysisMigration = migrationFiles.find(file => file.includes("202610200001_allow_analysis_delete"))!;
 const deleteProjectMigration = migrationFiles.find(file => file.includes("20261020042433_allow_project_delete"))!;
+const listMetadataMigration = migrationFiles.find(file => file.includes("workbook_list_metadata"))!;
 const actor = id<"user">(), other = id<"user">();
 
 function legacyPayload(s: WorkbookSnapshot) {
@@ -65,13 +67,14 @@ test("current-only migration, repeated Save, isolation and AHS round trips", asy
   await new Promise<void>(resolve => listener.close(() => resolve()));
   let started = false;
   let admin: postgres.Sql | undefined, login: postgres.Sql | undefined;
+  const statements: string[] = [];
   try {
     command("initdb", ["-D", join(directory, "db"), "-A", "trust", "-U", "postgres", "--no-locale"]);
     command("pg_ctl", ["-D", join(directory, "db"), "-l", join(directory, "postgres.log"), "-o", `-h 127.0.0.1 -p ${port} -k ${directory}`, "-w", "start"]); started = true;
     admin = postgres({ host: "127.0.0.1", port, user: "postgres", database: "postgres", max: 1, onnotice: () => {} });
     await admin.unsafe(`create role anon; create role authenticated; create schema auth;
       create function auth.uid() returns uuid language sql stable as 'select nullif(current_setting(''request.jwt.claim.sub'',true),'''')::uuid';`);
-    for (const file of migrationFiles.filter(file => file !== currentOnlyMigration && file !== deleteAnalysisMigration && file !== deleteProjectMigration)) {
+    for (const file of migrationFiles.filter(file => file !== currentOnlyMigration && file !== deleteAnalysisMigration && file !== deleteProjectMigration && file !== listMetadataMigration)) {
       await admin.begin(tx => tx.unsafe(readFileSync(new URL(file, migrations), "utf8")));
     }
 
@@ -137,8 +140,11 @@ test("current-only migration, repeated Save, isolation and AHS round trips", asy
     });
     await admin!.begin(tx => tx.unsafe(readFileSync(new URL(deleteAnalysisMigration, migrations), "utf8")));
     await admin!.begin(tx => tx.unsafe(readFileSync(new URL(deleteProjectMigration, migrations), "utf8")));
+    const beforeProjection = await admin`select analysis_id, data::text as data, version, saved_at, mutation_id, request_signature from procurement.current_workbooks order by analysis_id`;
+    await admin!.begin(tx => tx.unsafe(readFileSync(new URL(listMetadataMigration, migrations), "utf8")));
+    assert.deepEqual(await admin`select analysis_id, data::text as data, version, saved_at, mutation_id, request_signature from procurement.current_workbooks order by analysis_id`, beforeProjection);
     await admin.unsafe("create role procurement_app_test login noinherit; grant procurement_runtime to procurement_app_test;");
-    login = postgres({ host: "127.0.0.1", port, user: "procurement_app_test", database: "postgres", max: 2, onnotice: () => {} });
+    login = postgres({ host: "127.0.0.1", port, user: "procurement_app_test", database: "postgres", max: 2, onnotice: () => {}, debug: (_connection, query) => { statements.push(query); } });
     const repo = new PostgresWorkbookRepository(login, actor);
     const repoOther = new PostgresWorkbookRepository(login, other);
 
@@ -166,12 +172,59 @@ test("current-only migration, repeated Save, isolation and AHS round trips", asy
     await t.test("one Project supports multiple independent Analysis rows", async () => {
       const s = currentSnapshot(prepareVendorColumns(createProcurementWorkbook(dynamic.project.name, "Second", dynamic.projectId)));
       const outcome = await repo.save({ snapshot: s, configuration: s.workbook!.configuration, expectedVersion: null, mutationId: id<"mutation">() }, actor);
-      assert.equal(outcome.status, "SAVED"); assert.equal((await repo.listAnalyses(dynamic.projectId)).length, 2);
-      const updated = await repo.updateAnalysis(s.analysisId, actor, "Second renamed", "HOLD");
-      assert.deepEqual(updated, { id: s.analysisId, name: "Second renamed", status: "HOLD" });
-      const listed = await repo.listAnalyses(dynamic.projectId);
-      assert.deepEqual(listed.find(item => item.id === s.analysisId), { id: s.analysisId, name: "Second renamed", project_id: dynamic.projectId, status: "HOLD", period: null });
+      assert.equal(outcome.status, "SAVED"); assert.equal((await repo.listAnalyses(dynamic.projectId)).items.length, 2);
+      assert(outcome.status === "SAVED");
+      const updated = await repo.updateAnalysis(s.analysisId, actor, "Second renamed", "HOLD", outcome.workbook.version, id<"mutation">());
+      assert(!("code" in updated));
+      assert.deepEqual(updated, { id: s.analysisId, name: "Second renamed", status: "HOLD", version: updated.version });
+      const listed = (await repo.listAnalyses(dynamic.projectId)).items;
+      assert.deepEqual(listed.find(item => item.id === s.analysisId), { id: s.analysisId, name: "Second renamed", project_id: dynamic.projectId, status: "HOLD", version: updated.version, period: null });
       assert.equal((await repo.current(dynamic.analysisId))!.snapshot.analysis.analysis.name, "Dynamic");
+    });
+    await t.test("unchanged Saves and edit-revert retain JSON, version and saved time in both formats", async () => {
+      for (const s of seeds) {
+        const saved = await repo.current(s.analysisId); assert(saved);
+        const [before] = await admin!`select data::text as data, version, saved_at, data as payload from procurement.current_workbooks where analysis_id=${s.analysisId}`;
+        for (let i = 0; i < 3; i++) {
+          const draft = changeWorkbook(saved.snapshot, {});
+          const request: SaveRequest = { snapshot: draft, configuration: saved.configuration, expectedVersion: saved.version, mutationId: id<"mutation">() };
+          const outcome = await repo.save(request, actor);
+          assert.deepEqual(outcome, { status: "SAVED", workbook: saved });
+          assert.deepEqual(await repo.save(request, actor), outcome);
+          const [after] = await admin!`select data::text as data, version, saved_at, mutation_id from procurement.current_workbooks where analysis_id=${s.analysisId}`;
+          assert.equal(after!.data, before!.data); assert.equal(after!.version, before!.version);
+          assert.deepEqual(after!.saved_at, before!.saved_at); assert.equal(after!.mutation_id, request.mutationId);
+        }
+        const cells = saved.snapshot.worksheets.flatMap(w => w.tables.flatMap(t => t.cells));
+        const cell = cells.find(c => c.source.kind === "INPUT" && c.source.input.kind === "NUMERIC_TEXT"); assert(cell);
+        let reverted = numericCell(saved.snapshot, cell.id, "123456");
+        reverted = changeWorkbook(reverted, { worksheets: saved.snapshot.worksheets });
+        assert.deepEqual(await repo.save({ snapshot: reverted, configuration: saved.configuration, expectedVersion: saved.version, mutationId: id<"mutation">() }, actor), { status: "SAVED", workbook: saved });
+      }
+    });
+    await t.test("metadata is versioned, retries are safe, stale Save cannot undo rename and JSON is untouched", async () => {
+      const saved = await repo.current(dynamic.analysisId); assert(saved);
+      const [before] = await admin!`select data::text as data, saved_at from procurement.current_workbooks where analysis_id=${dynamic.analysisId}`;
+      const mutationId = id<"mutation">();
+      const updated = await repo.updateAnalysis(dynamic.analysisId, actor, "Dynamic renamed", "HOLD", saved.version, mutationId);
+      assert(!("code" in updated)); assert.notEqual(updated.version, saved.version);
+      assert.deepEqual(await repo.updateAnalysis(dynamic.analysisId, actor, "Dynamic renamed", "HOLD", saved.version, mutationId), updated);
+      const mismatch = await repo.updateAnalysis(dynamic.analysisId, actor, "Other name", "HOLD", saved.version, mutationId);
+      assert("code" in mismatch && mismatch.code === "IDEMPOTENCY_CONFLICT");
+      const stale = await repo.updateAnalysis(dynamic.analysisId, actor, "Old name", "DRAFT", saved.version, id<"mutation">());
+      assert("code" in stale && stale.code === "STALE_VERSION");
+      const oldSave = await repo.save({ snapshot: saved.snapshot, configuration: saved.configuration, expectedVersion: saved.version, mutationId: id<"mutation">() }, actor);
+      assert.equal(oldSave.status, "CONFLICT");
+      const [after] = await admin!`select data::text as data, saved_at from procurement.current_workbooks where analysis_id=${dynamic.analysisId}`;
+      assert.deepEqual(after, before);
+      const renamed = await repo.current(dynamic.analysisId); assert(renamed);
+      assert.equal(renamed.snapshot.analysis.analysis.name, "Dynamic renamed");
+      const illegalRename = await repo.save({ snapshot: saved.snapshot, configuration: saved.configuration, expectedVersion: updated.version, mutationId: id<"mutation">() }, actor);
+      assert.equal(illegalRename.status, "REJECTED");
+      const results = await Promise.all(["DRAFT", "HOLD"].map(status => repo.updateAnalysis(dynamic.analysisId, actor, "Dynamic renamed", status, updated.version, id<"mutation">())));
+      assert.equal(results.filter(result => !("code" in result)).length, 1);
+      assert.equal(results.filter(result => "code" in result && result.code === "STALE_VERSION").length, 1);
+      await assert.rejects(repoOther.updateAnalysis(dynamic.analysisId, other, "Foreign", "HOLD", updated.version, id<"mutation">()));
     });
     await t.test("simultaneous Saves accept one writer and preserve the latest committed data", async () => {
       const saved = await repo.current(dynamic.analysisId); assert(saved);
@@ -181,6 +234,150 @@ test("current-only migration, repeated Save, isolation and AHS round trips", asy
       assert.equal(results.filter(r => r.status === "CONFLICT").length, 1);
       const winner = results.find(r => r.status === "SAVED"); assert(winner?.status === "SAVED");
       assert.deepEqual(await repo.current(dynamic.analysisId), winner.workbook);
+    });
+    await t.test("metadata and Save racing on the same version accept exactly one writer", async () => {
+      const saved = await repo.current(dynamic.analysisId); assert(saved);
+      const [metadata, save] = await Promise.all([
+        repo.updateAnalysis(dynamic.analysisId, actor, saved.snapshot.analysis.analysis.name, "ACTIVE", saved.version, id<"mutation">()),
+        repo.save({ snapshot: numericCell(saved.snapshot, dynamic.workbook!.offers[0]!.baseCellId, "23000"), configuration: saved.configuration,
+          expectedVersion: saved.version, mutationId: id<"mutation">() }, actor),
+      ]);
+      assert.equal(Number(!("code" in metadata)) + Number(save.status === "SAVED"), 1);
+      assert.equal(Number("code" in metadata && metadata.code === "STALE_VERSION") + Number(save.status === "CONFLICT"), 1);
+    });
+    await t.test("configuration-only changes are real Saves, then become no-ops", async () => {
+      const saved = await repo.current(dynamic.analysisId); assert(saved?.configuration && saved.snapshot.workbook);
+      const configuration = { ...saved.configuration, version: saved.configuration.version + "-storage-test" };
+      const snapshot = changeWorkbook(saved.snapshot, { workbook: { ...saved.snapshot.workbook, configuration } });
+      const result = await repo.save({ snapshot, configuration, expectedVersion: saved.version, mutationId: id<"mutation">() }, actor);
+      assert(result.status === "SAVED"); assert.notEqual(result.workbook.version, saved.version);
+      assert.deepEqual((await repo.current(dynamic.analysisId))!.configuration, configuration);
+      assert.deepEqual(await repo.save({ snapshot: changeWorkbook(snapshot, {}), configuration, expectedVersion: result.workbook.version, mutationId: id<"mutation">() }, actor), result);
+      assert.equal((await repo.save({ snapshot: saved.snapshot, configuration: saved.configuration, expectedVersion: result.workbook.version, mutationId: id<"mutation">() }, actor)).status, "SAVED");
+    });
+    await t.test("metadata-only list preserves the original period lookup for legacy and dynamic workbooks", async () => {
+      for (const seed of seeds) {
+        let saved = await repo.current(seed.analysisId); assert(saved);
+        const original = saved;
+        const dates = saved.snapshot.worksheets.find(w => w.stage === "AHS")!.tables.flatMap(t => t.cells.filter(cell =>
+          t.rows.find(r => r.id === cell.rowId)?.label === "Tgl Analisis (Rn)" ||
+          saved!.snapshot.workbook?.cells.find(p => p.cellId === cell.id)?.address === (cell.scope === "INU" ? "H4" : "H3")));
+        assert(dates.length >= 2);
+        for (const value of ["14/10/2026", "15/10/2026", "31/02/2026", "29/02/2024", "29/02/2023", "01/01/0000", ""]) {
+          for (const activeProfile of ["INU", "SOLAR_BAWAH"] as const) {
+            const snapshot = changeWorkbook(saved.snapshot, { activeProfile, selectedOfferId: saved.snapshot.workbook?.selections[activeProfile] ?? saved.snapshot.selectedOfferId,
+              worksheets: saved.snapshot.worksheets.map(w => ({ ...w, tables: w.tables.map(t => ({ ...t, cells: t.cells.map(c =>
+                dates.some(d => d.id === c.id) ? { ...c, source: { kind: "INPUT" as const, input: { kind: "TEXT" as const, text: c.id === dates[0]!.id ? value : "01/11/2026" } } } : c) })) })) });
+            const outcome = await repo.save({ snapshot, configuration: saved.configuration, expectedVersion: saved.version, mutationId: id<"mutation">() }, actor);
+            assert(outcome.status === "SAVED"); saved = outcome.workbook;
+            const listed = (await repo.listAnalyses(seed.projectId)).items.find(a => a.id === seed.analysisId)!;
+            const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(value);
+            assert.equal(listed.period, (match ? analysisPeriod(`${match[3]}-${match[2]}-${match[1]}`) : "") || null);
+            assert.equal(listed.version, saved.version);
+            assert.deepEqual(Object.keys(listed).sort(), ["id", "name", "period", "project_id", "status", "version"]);
+          }
+        }
+        const formula = setCellFormula(saved.snapshot, dates[0]!.id, '"20/10/2026"');
+        const outcome = await repo.save({ snapshot: formula, configuration: saved.configuration, expectedVersion: saved.version, mutationId: id<"mutation">() }, actor);
+        assert(outcome.status === "SAVED");
+        assert.equal((await repo.listAnalyses(seed.projectId)).items.find(a => a.id === seed.analysisId)!.period, null);
+        assert.equal((await repo.save({ snapshot: original.snapshot, configuration: original.configuration, expectedVersion: outcome.workbook.version, mutationId: id<"mutation">() }, actor)).status, "SAVED");
+      }
+    });
+    await t.test("keyset pages, backward navigation, filters and RLS use only metadata", async () => {
+      for (let i = 0; i < 6; i++) {
+        const s = currentSnapshot(prepareVendorColumns(createProcurementWorkbook(dynamic.project.name, i === 5 ? "Paged 100%_" : "Paged " + i, dynamic.projectId)));
+        const saved = await repo.save({ snapshot: s, configuration: s.workbook!.configuration, expectedVersion: null, mutationId: id<"mutation">() }, actor);
+        assert(saved.status === "SAVED");
+        if (i % 2) await repo.updateAnalysis(s.analysisId, actor, s.analysis.analysis.name, "HOLD", saved.workbook.version, id<"mutation">());
+      }
+      const options = { limit: 2, query: " pAgEd " };
+      const first = await repo.listAnalyses(dynamic.projectId, options);
+      assert.equal(first.items.length, 2); assert.equal(first.total, 6);
+      assert.equal(first.previousCursor, null); assert(first.nextCursor);
+      const second = await repo.listAnalyses(dynamic.projectId, { ...options, after: first.nextCursor });
+      assert(second.previousCursor && second.nextCursor);
+      assert.deepEqual((await repo.listAnalyses(dynamic.projectId, { ...options, before: second.previousCursor })).items, first.items);
+      const third = await repo.listAnalyses(dynamic.projectId, { ...options, after: second.nextCursor });
+      assert.equal(third.nextCursor, null);
+      assert.equal(new Set([...first.items, ...second.items, ...third.items].map(a => a.id)).size, 6);
+      assert.equal((await repo.listAnalyses(dynamic.projectId, { query: "100%_" })).total, 1);
+      assert.equal((await repo.listAnalyses(dynamic.projectId, { query: "Paged", status: "HOLD" })).total, 3);
+      assert.equal((await repo.listAnalyses(dynamic.projectId, { query: "Paged", period: "NONE" })).total, 6);
+      assert.equal((await repoOther.listAnalyses(dynamic.projectId, { after: first.nextCursor })).total, 0);
+      assert.equal((await repo.listAnalyses(dynamic.projectId, { analysisId: third.items[0]!.id })).items[0]!.id, third.items[0]!.id);
+      for (const query of [{ limit: 0 }, { limit: 101 }, { after: "bad" }, { status: "BAD" }, { period: "invalid" }, { after: first.nextCursor, before: second.previousCursor }]) {
+        await assert.rejects(repo.listAnalyses(dynamic.projectId, query));
+      }
+      const listSql = statements.findLast(sql => sql.includes("with scoped as materialized"))!;
+      assert(listSql && !listSql.includes("c.data") && !listSql.includes("jsonb_array_elements"));
+      const handler = createWorkbookHandler({ async authenticate() { return actor; } }, () => repo);
+      const page = await handler(new Request(`http://localhost/api/workbook?view=analyses&projectId=${dynamic.projectId}&limit=2&query=Paged`));
+      assert.equal(page.status, 200); assert.equal((await page.json()).items.length, 2);
+      assert.equal((await handler(new Request(`http://localhost/api/workbook?view=analyses&projectId=${dynamic.projectId}&limit=101`))).status, 400);
+    });
+    await t.test("missing date projection reports a required upgrade without reading workbook JSON", async () => {
+      const handler = createWorkbookHandler({ async authenticate() { return actor; } }, () => repo);
+      await admin!.unsafe("alter table procurement.current_workbooks rename column analysis_date to pending_analysis_date");
+      try {
+        const response = await handler(new Request(`http://localhost/api/workbook?view=analyses&projectId=${dynamic.projectId}`));
+        assert.equal(response.status, 503); assert.deepEqual(await response.json(), { code: "STORAGE_UPGRADE_REQUIRED" });
+        assert(await repo.current(dynamic.analysisId));
+      } finally { await admin!.unsafe("alter table procurement.current_workbooks rename column pending_analysis_date to analysis_date"); }
+    });
+    await t.test("independent Analysis saves progress while another Analysis is locked", async () => {
+      const first = await repo.current(dynamic.analysisId); assert(first);
+      const otherId = (await repo.listAnalyses(dynamic.projectId, { query: "Paged" })).items[0]!.id;
+      const second = await repo.current(otherId); assert(second);
+      let waiting: Promise<Awaited<ReturnType<typeof repo.save>>> | undefined;
+      try {
+        await admin!.begin(async tx => {
+          await tx`select pg_advisory_xact_lock(hashtextextended(${'analysis:' + dynamic.analysisId},0))`;
+          waiting = repo.save({ snapshot: numericCell(first.snapshot, dynamic.workbook!.offers[0]!.baseCellId, "26000"), configuration: first.configuration, expectedVersion: first.version, mutationId: id<"mutation">() }, actor);
+          let locked = false;
+          for (let attempt = 0; attempt < 100; attempt++) {
+            const [lock] = await tx`select exists(select 1 from pg_locks where locktype='advisory' and not granted) as waiting`;
+            if (lock!.waiting) { locked = true; break; }
+            await new Promise(resolve => setTimeout(resolve, 10));
+          }
+          assert(locked, "First Save must be waiting on its Analysis lock.");
+          const locks = await tx`select mode from pg_locks where locktype='advisory' and granted and pid<>pg_backend_pid()`;
+          assert(locks.some(lock => lock.mode === "ShareLock"));
+          const result = await repo.save({ snapshot: second.snapshot, configuration: second.configuration, expectedVersion: second.version, mutationId: id<"mutation">() }, actor);
+          assert.equal(result.status, "SAVED");
+        });
+      } finally { if (waiting) assert.equal((await waiting).status, "SAVED"); }
+    });
+    await t.test("existing Save uses a bounded query budget and runtime guards remain fail-closed", async () => {
+      const saved = await repo.current(dynamic.analysisId); assert(saved);
+      statements.length = 0;
+      const result = await repo.save({ snapshot: numericCell(saved.snapshot, dynamic.workbook!.offers[0]!.baseCellId, "27000"), configuration: saved.configuration, expectedVersion: saved.version, mutationId: id<"mutation">() }, actor);
+      assert.equal(result.status, "SAVED"); assert(statements.length <= 11, `Save used ${statements.length} queries.`);
+      t.diagnostic(`Existing Save: ${statements.length} SQL commands including BEGIN/COMMIT; previously 17 by code inspection.`);
+      await admin!.unsafe("alter role procurement_app_test bypassrls");
+      try { await assert.rejects(repo.listProjects(), /runtime role policy/); }
+      finally { await admin!.unsafe("alter role procurement_app_test nobypassrls"); }
+      await admin!.unsafe("grant update(owner_id) on procurement.current_workbooks to procurement_runtime");
+      try { await assert.rejects(repo.listProjects(), /runtime role policy/); }
+      finally { await admin!.unsafe("revoke update(owner_id) on procurement.current_workbooks from procurement_runtime"); }
+      assert.deepEqual(await repo.current(dynamic.analysisId), result.status === "SAVED" ? result.workbook : null);
+    });
+    await t.test("project deletion races with Save without leaving or resurrecting partial data", async () => {
+      const s = currentSnapshot(prepareVendorColumns(createProcurementWorkbook("Delete race", "Race")));
+      const first = await repo.save({ snapshot: s, configuration: s.workbook!.configuration, expectedVersion: null, mutationId: id<"mutation">() }, actor);
+      assert(first.status === "SAVED");
+      await assert.rejects(repoOther.deleteProject(s.projectId, other));
+      await assert.rejects(repoOther.deleteAnalysis(s.analysisId, other));
+      const [saved, deleted] = await Promise.all([
+        repo.save({ snapshot: s, configuration: first.workbook.configuration, expectedVersion: first.workbook.version, mutationId: id<"mutation">() }, actor),
+        repo.deleteProject(s.projectId, actor),
+      ]);
+      assert(saved.status === "SAVED" || saved.status === "CONFLICT"); assert(deleted.deleted);
+      assert.equal(await repo.current(s.analysisId), null);
+      const remaining = await admin!`select 1 from procurement.projects where id=${s.projectId}
+        union all select 1 from procurement.analyses where project_id=${s.projectId}
+        union all select 1 from procurement.current_workbooks where project_id=${s.projectId}`;
+      assert.equal(remaining.length, 0);
     });
     await t.test("manual PPH formula and dependent vendor conversion recalculate after reload", async () => {
       const saved = await repo.current(dynamic.analysisId); assert(saved?.configuration);
@@ -316,6 +513,15 @@ test("current-only migration, repeated Save, isolation and AHS round trips", asy
       assert.equal(response.status, 200);
       const loaded = await handler(new Request(`http://localhost/api/workbook?analysisId=${dynamic.analysisId}`));
       assert.equal(loaded.status, 200); assert.equal((await loaded.json()).snapshot.analysisId, dynamic.analysisId);
+      const metadata = { operation: "UPDATE_ANALYSIS", analysisId: dynamic.analysisId, name: saved.snapshot.analysis.analysis.name, status: "HOLD" };
+      const update = (command: object) => handler(new Request("http://localhost/api/workbook", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(command) }));
+      assert.equal((await update(metadata)).status, 400);
+      const command = { ...metadata, expectedVersion: saved.version, mutationId: id<"mutation">() };
+      const updated = await update(command); assert.equal(updated.status, 200);
+      const updatedBody = await updated.json(); assert.notEqual(updatedBody.version, saved.version);
+      assert.deepEqual(await (await update(command)).json(), updatedBody);
+      assert.equal((await update({ ...command, name: "Different" })).status, 400);
+      assert.equal((await update({ ...command, mutationId: id<"mutation">() })).status, 409);
       for (const view of ["history", "revision", "replay", "runs", "latest-run"]) assert.equal((await handler(new Request(`http://localhost/api/workbook?view=${view}`))).status, 400);
       const before = await repo.current(dynamic.analysisId);
       for (const operation of ["RESTORE", "REPLAY", "CALCULATE"]) {

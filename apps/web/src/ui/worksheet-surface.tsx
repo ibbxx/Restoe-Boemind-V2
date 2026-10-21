@@ -19,9 +19,9 @@ import { appendField } from "../domain/workflow.ts";
 import { cellCodes, describeFormula, displayCellId, displayFormula, resolveFormula } from "../domain/cell-address.ts";
 import { prepareLegacySheet, vendorColumn } from "../domain/legacy-sheet.ts";
 import { numericInput } from "../domain/numeric-input.ts";
-import { isAhsVolumeCell, isAhsVolumeFollower } from "../domain/ahs-volume.ts";
+import { ahsVolumeSource, isAhsVolumeCell, isAhsVolumeFollower } from "../domain/ahs-volume.ts";
 import { WorksheetCellInput } from "./worksheet-cell-input.tsx";
-import { printWorkbook } from "./print-workbook.ts";
+import { printWorkbook, workbookPrintTitle } from "./print-workbook.ts";
 import { addVendorComponent, includeNewVendorComponentTotals, removableVendorComponents, removeVendorComponent, vendorComponents, vendorComponentRoles } from "../domain/vendor-components.ts";
 import { ahsCell, ahsGroups, ahsLabel, ahsSectionOfCell, removeAhsEntry } from "../domain/ahs-groups.ts";
 import { ahsFields, removeAhsField } from "../domain/ahs-fields.ts";
@@ -137,7 +137,7 @@ export function WorksheetSurface(props: SurfaceProps) {
         }).sort((a, b) => a - b);
       } else indexes = snapshot.analysis.offers.map((_, index) => index + 1);
       if (!indexes.length || indexes.some(index => index < 1)) throw new Error("Kolom vendor untuk cetak tidak ditemukan.");
-      await printWorkbook(sheet, indexes);
+      await printWorkbook(sheet, indexes, sheet.dataset.printTitle!);
     } catch (cause) { setToolbarError(cause instanceof Error ? cause.message : "Laporan gagal disiapkan."); }
     finally { setIsPreparingPrint(false); onPrintLoading?.(false); }
   }
@@ -507,6 +507,13 @@ export function WorksheetSurface(props: SurfaceProps) {
     ? `${selectedResult.status}: ${selectedResult.code}${selectedResult.path.length ? ` · ${selectedResult.path.map(id => codes.get(id) ?? id).join(" → ")}` : ""}` : "";
 
   if (!snapshot) return null;
+  const materialCell = allTables.flatMap(table => table.cells).find(cell => codes.get(cell.id) === "EV!D5");
+  const volumeCell = ahsVolumeSource(snapshot, snapshot.activeProfile);
+  const printTitle = workbookPrintTitle({
+    projectName: snapshot.project.name, analysisName: snapshot.analysis.analysis.name,
+    volume: volumeCell && !cellError(volumeCell) ? cellValue(volumeCell) : "",
+    material: materialCell && !cellError(materialCell) ? cellValue(materialCell) : "",
+  });
   const currentAhsGroups = ahsGroups(snapshot), incomeAhsGroups = ahsGroups(snapshot, snapshot.activeProfile, "PENDAPATAN");
   const addedAhsItems = [...currentAhsGroups, ...incomeAhsGroups].flatMap(g => g.items.filter(item => !item.builtin));
   const extraFields = (snapshot.ahsFields ?? []).filter(f => f.profile === snapshot.activeProfile);
@@ -856,7 +863,7 @@ export function WorksheetSurface(props: SurfaceProps) {
         {removeVendorDialog}
         {addComponentDialog}
         {removeComponentDialog}
-        <div ref={sheetRef} className="procurement-sheet" style={sheetStyle} data-testid="procurement-sheet">
+        <div ref={sheetRef} className="procurement-sheet" style={sheetStyle} data-testid="procurement-sheet" data-print-title={printTitle}>
           <header className="sheet-overview">
             <div><p className="eyebrow">PROCUREMENT WORKSPACE · {isINU ? "INU" : "SOLAR BAWAH"}</p>
               <h2>Evaluasi Vendor & Analisis Harga Satuan</h2>
@@ -1079,7 +1086,7 @@ export function WorksheetSurface(props: SurfaceProps) {
       {removeVendorDialog}
       {addComponentDialog}
       {removeComponentDialog}
-      <div ref={sheetRef} className="procurement-sheet" style={sheetStyle} data-testid="procurement-sheet">
+      <div ref={sheetRef} className="procurement-sheet" style={sheetStyle} data-testid="procurement-sheet" data-print-title={printTitle}>
         <header className="sheet-overview">
           <div><p className="eyebrow">PROCUREMENT WORKSPACE · {isINU ? "INU" : "SOLAR BAWAH"}</p>
             <h2>Evaluasi Vendor &amp; Analisis Harga Satuan</h2>

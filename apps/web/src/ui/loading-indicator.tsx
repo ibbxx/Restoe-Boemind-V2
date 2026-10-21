@@ -1,10 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import Image from "next/image";
 import type { LogoAnimation } from "./loading-logo-renderer.ts";
 
-export function LoadingIndicator({ active, label }: { active: boolean; label: string }) {
+export function LoadingIndicator({ active, label, inline = false }: { active: boolean; label: string; inline?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationRef = useRef<LogoAnimation | null>(null);
   const activeRef = useRef(active);
@@ -27,7 +26,7 @@ export function LoadingIndicator({ active, label }: { active: boolean; label: st
       animationRef.current = animation;
       animation.setActive(activeRef.current);
       setReady(true);
-    }).catch(() => { /* Logo sumber tetap tampil jika Canvas atau tekstur tidak tersedia. */ });
+    }).catch(() => { /* Teks status tetap tampil jika animasi tidak tersedia. */ });
     return () => {
       disposed = true;
       animationRef.current = null;
@@ -35,10 +34,9 @@ export function LoadingIndicator({ active, label }: { active: boolean; label: st
     };
   }, []);
 
-  return <div className="app-loading" hidden={!active} aria-hidden="true">
+  return <div className={inline ? "app-loading app-loading-inline" : "app-loading"} hidden={!active} aria-hidden="true">
     <div className="loading-logo">
       <canvas ref={canvasRef} width={256} height={256} hidden={!ready} />
-      <Image src="/loading-logo/logo.png" alt="" width={172} height={177} loading="eager" hidden={ready} />
     </div>
     <span>{label}</span>
   </div>;

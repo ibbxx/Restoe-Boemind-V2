@@ -49,7 +49,7 @@ export function vendorTables(source: HTMLTableElement, columnIndexes: readonly n
   return tables;
 }
 
-export async function printWorkbook(sheet: HTMLElement, vendorColumnIndexes: readonly number[]): Promise<void> {
+export async function printWorkbook(sheet: HTMLElement, vendorColumnIndexes: readonly number[], title: string): Promise<void> {
   if (document.querySelector(".workbook-print-host")) return;
   const vendor = sheet.querySelector<HTMLTableElement>(".vendor-sheet");
   const conversion = Array.from(sheet.querySelectorAll<HTMLTableElement>(".conversion-sheet"));
@@ -58,19 +58,20 @@ export async function printWorkbook(sheet: HTMLElement, vendorColumnIndexes: rea
   const host = document.createElement("div");
   host.className = "workbook-print-host";
   host.setAttribute("aria-hidden", "true");
-  const cleanup = () => { host.remove(); window.removeEventListener("afterprint", cleanup); };
+  let previousTitle: string | undefined;
+  const cleanup = () => {
+    host.remove(); window.removeEventListener("afterprint", cleanup);
+    if (previousTitle !== undefined) { document.title = previousTitle; previousTitle = undefined; }
+  };
   try {
     const vendors = vendorTables(vendor, vendorColumnIndexes);
-    for (const [index, table] of vendors.entries()) {
+    for (const table of vendors) {
       const page = document.createElement("div"), report = document.createElement("div"), left = document.createElement("div"), right = document.createElement("div");
       page.className = "workbook-print-page"; report.className = "workbook-print-report";
       left.className = "print-left"; right.className = "print-right";
-      const indicator = document.createElement("div");
-      indicator.className = "print-page-indicator";
-      indicator.textContent = `Halaman ${index + 1}/${vendors.length} · Vendor ${index * 3 + 1}–${Math.min((index + 1) * 3, vendorColumnIndexes.length)} dari ${vendorColumnIndexes.length}`;
       left.append(table, ...conversion.map(table => copyTable(table, "conversion")));
       right.append(...ahs.map(table => copyTable(table, "ahs")));
-      report.append(left, right); page.append(indicator, report); host.append(page);
+      report.append(left, right); page.append(report); host.append(page);
     }
     document.body.append(host);
     await document.fonts.ready;
@@ -81,6 +82,14 @@ export async function printWorkbook(sheet: HTMLElement, vendorColumnIndexes: rea
       report.style.transform = `scale(${scale})`;
     }
     window.addEventListener("afterprint", cleanup);
+    previousTitle = document.title;
+    document.title = title;
     window.print();
   } catch (error) { cleanup(); throw error; }
+}
+
+export function workbookPrintTitle({ projectName, analysisName, volume, material }: { projectName: string; analysisName: string; volume: string; material: string }): string {
+  const clean = (value: string) => value.replace(/[\p{Cc}<>:"/\\|?*]/gu, " ").replace(/\s+/g, " ").trim().replace(/[. ]+$/, "");
+  const volumeText = clean(volume);
+  return [`PROYEK ${clean(projectName)}`.trim(), clean(analysisName), volumeText ? `${volumeText} L` : "", clean(material)].filter(Boolean).join(" - ");
 }

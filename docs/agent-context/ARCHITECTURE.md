@@ -1,5 +1,15 @@
 # Architecture
 
+## Save hemat payload dan versi metadata — 2026-10-20
+
+Save membandingkan payload normalized dengan mengabaikan hanya ID snapshot draft. Bila isi/configuration sama, JSON, token versi dan waktu simpan tetap; hanya mutation ID/signature terakhir diperbarui untuk retry. Perubahan nyata tetap mengganti satu kondisi atomik. Validasi ownership, retry dan versi dilakukan sebelum pemeriksaan kesamaan. Nama Project/Analysis yang sudah ada tidak ditulis ulang oleh Save; nama tidak sesuai ditolak, bukan digabung otomatis.
+
+UPDATE_ANALYSIS wajib membawa expectedVersion dan mutationId. Rename/status memakai lock Project lalu Analysis, mengganti versi serta metadata retry tanpa menulis payload JSON. Versi tertinggal menghasilkan HTTP 409; retry identik terakhir diterima, mutation yang sama dengan isi berbeda ditolak. Client memperbarui token tanpa menyimpan atau membuang draft; status worksheet aktif memakai versi workbook yang dimuat, bukan token daftar yang mungkin lebih baru.
+
+Daftar Analysis mengembalikan metadata, versi dan periode saja. SQL mengekstrak sel tanggal pertama dari worksheet AHS pertama dalam urutan tabel/sel, menurut label atau alamat presentasi H4 INU/H3 lainnya; hanya INPUT TEXT tanggal valid menghasilkan periode. Payload penuh tidak dikirim ke Node atau didekode untuk daftar. PostgreSQL tetap membaca JSON untuk ekstraksi tanggal; belum ada proyeksi tanggal terpisah.
+
+Tidak ada dependensi, tabel, migration, histori atau monitoring kapasitas baru. Verifikasi menggunakan PostgreSQL lokal terisolasi; tidak menjalankan migration, maintenance atau penulisan cloud. Browser tetap diperiksa manual oleh pengguna.
+
 ## Cetak seluruh vendor — 2026-10-19
 
 Tombol cetak menyalin seluruh kolom vendor aktif Evaluasi Vendor sesuai urutan tampil, maksimal tiga vendor pada setiap halaman A4 landscape. Metadata proyek, uraian, hasil formula, total, dan catatan ikut dicetak; Konversi dan AHS dari vendor/profil yang dipilih diulang pada setiap halaman. Kolom yang tidak ditemukan menolak cetak, tanpa melewati vendor secara diam-diam. Salinan DOM dibersihkan melalui afterprint (termasuk pembatalan dialog) atau saat gagal. Worksheet, pilihan vendor, formula, dan persistence tidak berubah.

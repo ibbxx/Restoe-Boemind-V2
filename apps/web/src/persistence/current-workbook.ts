@@ -7,6 +7,14 @@ import { canonicalJson, captureSnapshot, freeze } from "../domain/snapshots.ts";
 import { nullableId, object, requireCondition } from "../domain/validation.ts";
 import type { EngineConfiguration } from "../engine/contracts.ts";
 import { captureConfiguration, compileGraph } from "../engine/graph.ts";
+import { encodeWorkbook } from "./workbook-data.ts";
+
+function storedContent(snapshot: SaveRequest["snapshot"], configuration: SaveRequest["configuration"]) {
+  const data = encodeWorkbook(snapshot, configuration);
+  const { id, ...state } = data.state;
+  void id;
+  return canonicalJson({ ...data, state });
+}
 
 export interface CurrentRecord {
   readonly workbook: SavedWorkbook;
@@ -38,7 +46,13 @@ export function planSave(request: SaveRequest, actor: StableId<"user">, signatur
   const currentVersion = prior?.workbook.version ?? null;
   if (request.expectedVersion !== currentVersion) return { outcome: { status: "CONFLICT", code: "STALE_VERSION", expectedVersion: request.expectedVersion, currentVersion } };
   requireCondition(!prior || prior.workbook.snapshot.projectId === request.snapshot.projectId, "An analysis cannot move to another project.");
-  const workbook: SavedWorkbook = freeze({ snapshot: currentSnapshot(request.snapshot), configuration: request.configuration,
+  requireCondition(!prior || (prior.workbook.snapshot.project.name === request.snapshot.project.name &&
+    prior.workbook.snapshot.analysis.analysis.name === request.snapshot.analysis.analysis.name), "Use the metadata operation to rename an existing analysis.");
+  const snapshot = currentSnapshot(request.snapshot);
+  if (prior && storedContent(snapshot, request.configuration) === storedContent(prior.workbook.snapshot, prior.workbook.configuration)) {
+    return { record: { workbook: prior.workbook, mutationId: request.mutationId, signature }, outcome: { status: "SAVED", workbook: prior.workbook } };
+  }
+  const workbook: SavedWorkbook = freeze({ snapshot, configuration: request.configuration,
     version: createStableId<"version">(), savedAt: new Date().toISOString(), savedBy: actor });
   return { record: { workbook, mutationId: request.mutationId, signature }, outcome: { status: "SAVED", workbook } };
 }

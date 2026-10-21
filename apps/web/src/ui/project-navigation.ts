@@ -8,6 +8,8 @@ export interface ProjectLocation {
   analysisQuery: string;
   status: AnalysisStatus | "";
   period: string;
+  after: string;
+  before: string;
 }
 
 export function readProjectLocation(search: string): ProjectLocation {
@@ -18,6 +20,7 @@ export function readProjectLocation(search: string): ProjectLocation {
     projectQuery: params.get("projectQuery") ?? "", analysisQuery: params.get("analysisQuery") ?? "",
     status: ANALYSIS_STATUSES.includes(status as AnalysisStatus) ? status as AnalysisStatus : "",
     period: params.get("period") ?? "",
+    after: params.get("after") ?? "", before: params.get("before") ?? "",
   };
 }
 
@@ -30,6 +33,14 @@ export function projectLocationUrl(location: ProjectLocation): string {
 
 export function matchesName(name: string, query: string): boolean {
   return name.toLocaleLowerCase("id-ID").includes(query.trim().toLocaleLowerCase("id-ID"));
+}
+
+export function analysisListUrl(location: ProjectLocation, analysisId?: string): string {
+  const params = new URLSearchParams({ view: "analyses", projectId: location.projectId ?? "" });
+  if (analysisId) params.set("analysisId", analysisId);
+  else for (const [key, value] of Object.entries({ after: location.after, before: location.before,
+    query: location.analysisQuery, status: location.status, period: location.period })) if (value) params.set(key, value);
+  return `/api/workbook?${params}`;
 }
 
 export function matchesAnalysis(analysis: { name: string; status: AnalysisStatus; period: string | null }, filters: ProjectLocation): boolean {

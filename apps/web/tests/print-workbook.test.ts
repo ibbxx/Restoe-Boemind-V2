@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { vendorTables } from "../src/ui/print-workbook.ts";
+import type { TestContext } from "node:test";
+import { printWorkbook, vendorTables, workbookPrintTitle } from "../src/ui/print-workbook.ts";
 
 // Table-only DOM fixture; browser pagination and print-dialog behavior remain manual checks.
 class Cell {
@@ -92,4 +93,118 @@ test("invalid or missing vendor columns fail instead of silently skipping a vend
   for (const indexes of [[], [0], [1, 1], [1.5], [-1], [1, 8]]) {
     assert.throws(() => vendorTables(dom(fixture(7)), indexes), /kolom vendor|Kolom vendor/);
   }
+});
+
+test("PDF title follows project, analysis, displayed volume, and material without profile or extension", () => {
+  assert.equal(workbookPrintTitle({ projectName: "TONASA", analysisName: "AMIR LAMA BGT", volume: "50.000", material: "Solar" }),
+    "PROYEK TONASA - AMIR LAMA BGT - 50.000 L - Solar");
+  assert.equal(workbookPrintTitle({ projectName: "TONASA", analysisName: "Analisis", volume: "50.000,5", material: "BBM" }),
+    "PROYEK TONASA - Analisis - 50.000,5 L - BBM");
+});
+
+test("PDF title omits missing metadata and removes unsafe filename characters", () => {
+  assert.equal(workbookPrintTitle({ projectName: " TONASA / A ", analysisName: "Amir: \"B\"\n2026", volume: "", material: " \t " }),
+    "PROYEK TONASA A - Amir B 2026");
+  assert.equal(workbookPrintTitle({ projectName: "Proyek\\baru", analysisName: "A*?|<>...", volume: "500", material: "Solar\u0000 Bawah" }),
+    "PROYEK Proyek baru - A - 500 L - Solar Bawah");
+  assert.equal(workbookPrintTitle({ projectName: "TONASA", analysisName: "Analisis", volume: "", material: "Solar" }),
+    "PROYEK TONASA - Analisis - Solar");
+});
+
+class PrintElement {
+  className = "";
+  textContent = "";
+  style = { transform: "" };
+  children: PrintElement[] = [];
+  parent?: PrintElement;
+  clientWidth = 1000;
+  clientHeight = 700;
+  scrollWidth = 900;
+  scrollHeight = 600;
+  offsetTop = 16;
+  setAttribute() {}
+  append(...children: PrintElement[]) {
+    this.children.push(...children);
+    for (const child of children) child.parent = this;
+  }
+  remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); }
+  querySelectorAll(selector: string): PrintElement[] {
+    return this.children.flatMap(child => [
+      ...(child.className === selector.slice(1) ? [child] : []),
+      ...(child instanceof PrintElement ? child.querySelectorAll(selector) : []),
+    ]);
+  }
+  querySelector(selector: string) { return this.querySelectorAll(selector)[0] ?? null; }
+}
+
+function printEnvironment(t: TestContext) {
+  const body = new PrintElement();
+  const afterprint = new Set<() => void>();
+  let printCalls = 0;
+  let failure: Error | undefined;
+  const doc = {
+    title: "Dynamic Procurement Workbook", body, fonts: { ready: Promise.resolve() },
+    createElement: () => new PrintElement(),
+    querySelector: (selector: string) => body.querySelector(selector),
+  };
+  const win = {
+    addEventListener: (name: string, callback: () => void) => { if (name === "afterprint") afterprint.add(callback); },
+    removeEventListener: (name: string, callback: () => void) => { if (name === "afterprint") afterprint.delete(callback); },
+    print: () => { printCalls++; if (failure) throw failure; },
+  };
+  for (const [name, value] of Object.entries({ document: doc, window: win })) {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+    Object.defineProperty(globalThis, name, { configurable: true, value });
+    t.after(() => { if (descriptor) Object.defineProperty(globalThis, name, descriptor); else Reflect.deleteProperty(globalThis, name); });
+  }
+  const sheet = {
+    querySelector: () => dom(fixture(3)),
+    querySelectorAll: () => [dom(fixture(1))],
+  } as unknown as HTMLElement;
+  return { doc, sheet, afterprint, failPrint: (error: Error) => { failure = error; }, printCalls: () => printCalls,
+    closeDialog: () => { for (const listener of afterprint) listener(); } };
+}
+
+test("print title remains active until the dialog closes or is cancelled, then repeated print uses fresh metadata", async t => {
+  const env = printEnvironment(t);
+  const original = env.doc.title;
+  for (const title of ["Proyek TONASA - Analisis - 50.000 L - Solar", "Proyek TONASA - Analisis baru - 75.000 L - BBM"]) {
+    await printWorkbook(env.sheet, [1, 2, 3], title);
+    assert.equal(env.doc.title, title);
+    assert.equal(env.doc.body.children.length, 1);
+    env.closeDialog();
+    assert.equal(env.doc.title, original);
+    assert.equal(env.doc.body.children.length, 0);
+    assert.equal(env.afterprint.size, 0);
+  }
+  assert.equal(env.printCalls(), 2);
+});
+
+test("print failure restores even an empty title and removes the report", async t => {
+  const env = printEnvironment(t);
+  env.doc.title = "";
+  env.failPrint(new Error("Dialog gagal dibuka"));
+  await assert.rejects(printWorkbook(env.sheet, [1, 2, 3], "Proyek TONASA"), /Dialog gagal dibuka/);
+  assert.equal(env.doc.title, "");
+  assert.equal(env.doc.body.children.length, 0);
+  assert.equal(env.afterprint.size, 0);
+});
+
+test("preparation failure leaves the original page title unchanged", async t => {
+  const env = printEnvironment(t);
+  await assert.rejects(printWorkbook(env.sheet, [1, 9], "Proyek TONASA"), /Kolom vendor/);
+  assert.equal(env.doc.title, "Dynamic Procurement Workbook");
+  assert.equal(env.doc.body.children.length, 0);
+  assert.equal(env.printCalls(), 0);
+});
+
+test("a second print cannot overwrite the title of an open print dialog", async t => {
+  const env = printEnvironment(t);
+  await printWorkbook(env.sheet, [1, 2, 3], "Proyek pertama");
+  await printWorkbook(env.sheet, [1, 2, 3], "Proyek kedua");
+  assert.equal(env.doc.title, "Proyek pertama");
+  assert.equal(env.printCalls(), 1);
+  assert.equal(env.doc.body.children.length, 1);
+  env.closeDialog();
+  assert.equal(env.doc.title, "Dynamic Procurement Workbook");
 });

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, PointerEvent } from "react";
 import Image from "next/image";
-import { AlertTriangle, ArrowLeft, ChevronRight, LogIn, LogOut, Pencil, Save, Search, Trash2 } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ChevronRight, LogIn, LogOut, Pencil, Save, Trash2 } from "lucide-react";
 import type { WorkbookSnapshot } from "../domain/contracts.ts";
 import type { StableId } from "../domain/ids.ts";
 import { createStableId as id, parseStableId } from "../domain/ids.ts";
@@ -11,7 +11,7 @@ import { updateCellInput } from "../domain/commands.ts";
 import { appendField } from "../domain/workflow.ts";
 import { analysisDateInput, analysisPeriod, createAnalysisWorkbook } from "../domain/analysis-creation.ts";
 import { canonicalJson, captureSnapshot } from "../domain/snapshots.ts";
-import type { SaveRequest, SaveOutcome, SavedWorkbook } from "../application/contracts.ts";
+import type { AnalysisListItem, AnalysisPage, AnalysisMetadata, SaveRequest, SaveOutcome, SavedWorkbook } from "../application/contracts.ts";
 import { FormulaEngine } from "../engine/formula-engine.ts";
 import type { EngineConfiguration, EngineRun } from "../engine/contracts.ts";
 import { api, ApiError, invalidateSessionRequests, readSession, saveRequestBody } from "./workbook-client.ts";
@@ -19,6 +19,8 @@ import { WorksheetSurface } from "./worksheet-surface.tsx";
 import { LoadingIndicator } from "./loading-indicator.tsx";
 import { ConfirmationDialog } from "./confirmation-dialog.tsx";
 import { CardContent, CardDescription, CardFooter, CardHeader } from "../components/ui/card.tsx";
+import SignIn from "../components/ui/modern-login-signup.tsx";
+import { ExpandingSearchDock } from "../components/ui/expanding-search-dock-shadcnui.tsx";
 import { prepareNumericBlanks } from "../domain/procurement-template.ts";
 import { prepareLegacySheet, legacyConfiguration, connectAhsHpp, makeAhsSaleInput } from "../domain/legacy-sheet.ts";
 import { prepareVendorColumns, prepareSelectedVendorMappings, selectSheetOffer } from "../domain/dynamic-workflow.ts";
@@ -28,11 +30,10 @@ import { prepareCalculationPolicy } from "../domain/calculation-policy.ts";
 import { prepareAhsRollups } from "../domain/ahs-groups.ts";
 import { ANALYSIS_STATUSES, analysisStatusLabel } from "../domain/analysis-status.ts";
 import type { AnalysisStatus } from "../domain/analysis-status.ts";
-import { matchesAnalysis, matchesName, projectLocationUrl, readProjectLocation } from "./project-navigation.ts";
+import { analysisListUrl, matchesName, projectLocationUrl, readProjectLocation } from "./project-navigation.ts";
 import type { ProjectLocation } from "./project-navigation.ts";
 
 type ProjectListItem = { id: string; name: string };
-type AnalysisListItem = { id: string; name: string; project_id: string; status: AnalysisStatus; period: string | null };
 type Confirmation = { eyebrow: string; title: string; description: string; confirmLabel?: string; onConfirm: () => void };
 function field(form: FormData, name: string) { return String(form.get(name) ?? "").trim(); }
 function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); return new FormData(event.currentTarget); }
@@ -44,6 +45,7 @@ export function ProcurementWorkspace() {
   const loadingLabel = busy ? (saving ? "Menyimpan perubahan…" : "Memproses…") : "Menyiapkan cetakan…";
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [analyses, setAnalyses] = useState<AnalysisListItem[]>([]);
+  const [analysisPage, setAnalysisPage] = useState<AnalysisPage>({ items: [], total: 0, periods: [], nextCursor: null, previousCursor: null });
   const [location, setLocation] = useState(() => readProjectLocation(""));
   const locationRef = useRef(location);
   const projectsRef = useRef<ProjectListItem[]>([]);
@@ -122,12 +124,12 @@ export function ProcurementWorkspace() {
     const mappingActor = lastActor.current;
     if (mappingActor) s = prepareSelectedVendorMappings(s, mappingActor);
     config = s.workbook ? s.workbook.configuration : legacyConfiguration(s, config);
-    const analysisList = await api<AnalysisListItem[]>(`/api/workbook?view=analyses&projectId=${s.projectId}`);
+    const analysisList = await api<AnalysisPage>(analysisListUrl({ ...locationRef.current, projectId: s.projectId }, analysisId));
     if (workspaceEpoch.current !== epoch || lastActor.current !== actorId) return;
     previewRef.current = null; configurationRef.current = config; snapshotRef.current = s; setSnapshot(s);
     savedVersion.current = stored.version;
     setConfiguration(config); savedSnapshotRef.current = s; setDirty(false); pendingSave.current = null;
-    setAnalyses(analysisList);
+    setAnalyses([...analysisList.items]);
     writeLocation({ ...locationRef.current, projectId: s.projectId, analysisId }, "replace");
     setMessage("Analisis dimuat.");
   }, [prepareVolumes, writeLocation]);
@@ -152,8 +154,8 @@ export function ProcurementWorkspace() {
     if (!next.projectId) { setMessage("Daftar proyek."); return; }
     const projectId = parseStableId<"project">(next.projectId);
     if (!projectsRef.current.some(project => project.id === projectId)) throw new Error("Proyek tidak ditemukan atau tidak dapat diakses.");
-    const items = await api<AnalysisListItem[]>(`/api/workbook?view=analyses&projectId=${projectId}`);
-    if (workspaceEpoch.current === epoch && lastActor.current === actorId) { setAnalyses(items); setMessage("Pilih analisis yang akan dibuka."); }
+    const page = await api<AnalysisPage>(analysisListUrl(next));
+    if (workspaceEpoch.current === epoch && lastActor.current === actorId) { setAnalyses([...page.items]); setAnalysisPage(page); setMessage("Pilih analisis yang akan dibuka."); }
   }, [clearWorksheet, load]);
 
   function navigate(next: ProjectLocation, discardDraft = false) {
@@ -166,7 +168,9 @@ export function ProcurementWorkspace() {
   }
 
   function updateFilters(next: Partial<Pick<ProjectLocation, "projectQuery" | "analysisQuery" | "status" | "period">>) {
-    writeLocation({ ...locationRef.current, ...next }, "replace");
+    const updated = { ...locationRef.current, ...next, after: "", before: "" };
+    writeLocation(updated, "replace");
+    if (updated.projectId) void task(() => restoreLocation(updated));
   }
   function showAnalysisForm(projectId: string) {
     setNewAnalysisDate(analysisDateInput());
@@ -174,7 +178,7 @@ export function ProcurementWorkspace() {
     setError("");
   }
   function showProject(projectId: string) {
-    navigate({ ...locationRef.current, projectId, analysisId: null, analysisQuery: "", status: "", period: "" });
+    navigate({ ...locationRef.current, projectId, analysisId: null, analysisQuery: "", status: "", period: "", after: "", before: "" });
   }
   function openProjectContextMenu(project: ProjectListItem, x: number, y: number) {
     setProjectContextMenu({ project, x: Math.min(x, window.innerWidth - 220), y: Math.min(y, window.innerHeight - 70) });
@@ -197,6 +201,24 @@ export function ProcurementWorkspace() {
   function removeAnalysis(projectId: string, analysis: AnalysisListItem) {
     setAnalysisToDelete({ projectId, analysis });
   }
+  async function persistAnalysisMetadata(analysis: AnalysisListItem, name: string, status: AnalysisStatus) {
+    const epoch = workspaceEpoch.current, actorId = lastActor.current;
+    const expectedVersion = snapshotRef.current?.analysisId === analysis.id ? savedVersion.current : analysis.version;
+    if (!expectedVersion) return;
+    const updated = await api<AnalysisMetadata>("/api/workbook", { method: "POST", body: JSON.stringify({ operation: "UPDATE_ANALYSIS",
+      analysisId: analysis.id, name, status, expectedVersion, mutationId: id<"mutation">() }) });
+    if (workspaceEpoch.current !== epoch || lastActor.current !== actorId) return;
+    setAnalyses(current => current.map(item => item.id === analysis.id ? { ...item, ...updated } : item));
+    if (snapshotRef.current?.analysisId === analysis.id) {
+      savedVersion.current = updated.version;
+      const rename = (s: WorkbookSnapshot): WorkbookSnapshot => captureSnapshot({ ...s, analysis: { ...s.analysis, analysis: { ...s.analysis.analysis, name: updated.name } } });
+      snapshotRef.current = rename(snapshotRef.current);
+      setSnapshot(snapshotRef.current);
+      if (savedSnapshotRef.current) savedSnapshotRef.current = rename(savedSnapshotRef.current);
+    }
+    if (!snapshotRef.current) await restoreLocation(locationRef.current);
+    setMessage("Analisis diperbarui.");
+  }
   function updateAnalysisMetadata(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!analysisToEdit) return;
@@ -205,20 +227,12 @@ export function ProcurementWorkspace() {
     const name = field(form, "analysisName");
     const status = field(form, "analysisStatus") as AnalysisStatus;
     setAnalysisToEdit(null);
-    void task(async () => {
-      await api("/api/workbook", { method: "POST", body: JSON.stringify({ operation: "UPDATE_ANALYSIS", analysisId: analysis.id, name, status }) });
-      setAnalyses(current => current.map(item => item.id === analysis.id ? { ...item, name, status } : item));
-      setMessage("Analisis diperbarui.");
-    });
+    void task(() => persistAnalysisMetadata(analysis, name, status));
   }
   function updateActiveAnalysisStatus(status: AnalysisStatus) {
     const analysis = snapshot && analyses.find(item => item.id === snapshot.analysisId);
     if (!analysis) return;
-    void task(async () => {
-      await api("/api/workbook", { method: "POST", body: JSON.stringify({ operation: "UPDATE_ANALYSIS", analysisId: analysis.id, name: analysis.name, status }) });
-      setAnalyses(current => current.map(item => item.id === analysis.id ? { ...item, status } : item));
-      setMessage("Status analisis diperbarui.");
-    });
+    void task(() => persistAnalysisMetadata(analysis, analysis.name, status));
   }
   function confirmRemoveAnalysis() {
     if (!analysisToDelete) return;
@@ -230,8 +244,14 @@ export function ProcurementWorkspace() {
       setMessage("Analisis dihapus.");
       await refreshProjects();
       const epoch = workspaceEpoch.current;
-      const items = await api<AnalysisListItem[]>(`/api/workbook?view=analyses&projectId=${projectId}`);
-      if (workspaceEpoch.current === epoch && locationRef.current.projectId === projectId) setAnalyses(items);
+      const page = await api<AnalysisPage>(analysisListUrl(locationRef.current));
+      if (workspaceEpoch.current === epoch && locationRef.current.projectId === projectId) {
+        setAnalyses([...page.items]); setAnalysisPage(page);
+        if (!page.items.length && (locationRef.current.after || locationRef.current.before)) {
+          const first = { ...locationRef.current, after: "", before: "" };
+          writeLocation(first, "replace"); await restoreLocation(first);
+        }
+      }
     });
   }
   function confirmRemoveProject() {
@@ -405,21 +425,21 @@ export function ProcurementWorkspace() {
     if (!projectsRef.current.some(project => project.id === current.projectId)) projectsRef.current = [...projectsRef.current, { id: current.projectId, name: current.project.name }];
     setProjects(projectsRef.current);
     setAnalyses(prior => prior.some(analysis => analysis.id === current.analysisId)
-      ? prior.map(analysis => analysis.id === current.analysisId ? { ...analysis, name: current.analysis.analysis.name } : analysis)
-      : [...prior, { id: current.analysisId, name: current.analysis.analysis.name, project_id: current.projectId, status: "DRAFT", period: analysisPeriod(newAnalysisDate) || null }]);
+      ? prior.map(analysis => analysis.id === current.analysisId ? { ...analysis, name: outcome.workbook.snapshot.analysis.analysis.name, version: outcome.workbook.version } : analysis)
+      : [...prior, { id: current.analysisId, name: outcome.workbook.snapshot.analysis.analysis.name, project_id: current.projectId, status: "DRAFT", version: outcome.workbook.version, period: analysisPeriod(newAnalysisDate) || null }]);
     writeLocation({ ...locationRef.current, projectId: current.projectId, analysisId: current.analysisId }, "replace");
-    setMessage("Tersimpan.");
+    setMessage(request.expectedVersion === outcome.workbook.version ? "Tidak ada perubahan." : "Tersimpan.");
   }
 
   const selectedProject = projects.find(project => project.id === location.projectId);
   const visibleProjects = projects.filter(project => matchesName(project.name, location.projectQuery));
-  const visibleAnalyses = analyses.map((analysis, index) => ({ ...analysis, number: index + 1 })).filter(analysis => matchesAnalysis(analysis, location));
-  const periods = [...new Set(analyses.flatMap(analysis => analysis.period ? [analysis.period] : []))];
+  const visibleAnalyses = analyses.map((analysis, index) => ({ ...analysis, number: index + 1 }));
+  const periods = [...analysisPage.periods];
   if (location.period && location.period !== "NONE" && !periods.includes(location.period)) periods.push(location.period);
   const hasFilters = location.projectId ? Boolean(location.analysisQuery || location.status || location.period) : Boolean(location.projectQuery);
 
   return <main className={actor ? "workbook-app" : "login-app"}>
-    <header className="app-header">
+    <header className="app-header" hidden={!actor}>
       <div className="app-brand"><Image src="/image.png" width={38} height={39} alt="" priority />
         <div><h1>Sistem Evaluasi Vendor</h1>{(snapshot || selectedProject) && <span>{snapshot?.project.name ?? selectedProject?.name}</span>}</div>
       </div>
@@ -432,8 +452,8 @@ export function ProcurementWorkspace() {
     </header>
     <div className="operation-status" role="status" aria-label="Status operasi" aria-live="polite">{busy || preparingPrint ? loadingLabel : message}</div>
     <LoadingIndicator active={busy || preparingPrint} label={loadingLabel} />
-    {(error || (snapshot && volumeError) || preview?.error) && <p role="alert">{error || volumeError || `Perhitungan gagal: ${preview?.error}`}</p>}
-    {!actor ? <section><h2>Masuk</h2><form onSubmit={event => { const form = submit(event); const element = event.currentTarget;
+    {actor && (error || (snapshot && volumeError) || preview?.error) && <p role="alert">{error || volumeError || `Perhitungan gagal: ${preview?.error}`}</p>}
+    {!actor ? <SignIn busy={busy} error={error} onSubmit={event => { const form = submit(event); const element = event.currentTarget;
       const password = element.elements.namedItem("password"); if (password instanceof HTMLInputElement) password.value = "";
       void task(async () => {
         invalidateSessionRequests(); workspaceEpoch.current++;
@@ -445,8 +465,7 @@ export function ProcurementWorkspace() {
         }
         lastActor.current = session.actorId; setActor(session.actorId); sessionChannel.current?.postMessage({ actorId: session.actorId });
         element.reset(); await refreshProjects(); setMessage("Berhasil masuk.");
-      }); }}><fieldset disabled={busy}><label>Email<input name="email" type="email" autoComplete="username" required /></label>
-      <label>Kata sandi<input name="password" type="password" autoComplete="current-password" required /></label><button>Masuk</button></fieldset></form></section>
+      }); }} />
     : <>
       {!snapshot ? <section className="project-index" aria-labelledby="project-index-title">
         <header className="project-index-heading">
@@ -459,13 +478,13 @@ export function ProcurementWorkspace() {
           {(!location.projectId || selectedProject) && <button type="button" disabled={busy} onClick={() => showAnalysisForm(selectedProject?.id ?? "")}>{selectedProject ? "＋ Tambah analisis" : "＋ Proyek baru"}</button>}
         </header>
         {(!location.projectId || selectedProject) && <div className="project-filters" role="search" aria-label={location.projectId ? "Filter analisis" : "Cari proyek"}>
-          <label className="project-search"><Search aria-hidden="true" /><input type="search" aria-label={location.projectId ? "Cari analisis" : "Cari proyek"} placeholder={location.projectId ? "Cari analisis…" : "Cari proyek…"} value={location.projectId ? location.analysisQuery : location.projectQuery} disabled={busy} onChange={event => updateFilters(location.projectId ? { analysisQuery: event.target.value } : { projectQuery: event.target.value })} /></label>
+          <ExpandingSearchDock key={location.projectId ?? "projects"} label={location.projectId ? "Cari analisis" : "Cari proyek"} placeholder={location.projectId ? "Cari analisis…" : "Cari proyek…"} value={location.projectId ? location.analysisQuery : location.projectQuery} disabled={busy} onSearch={query => updateFilters(location.projectId ? { analysisQuery: query } : { projectQuery: query })} />
           {location.projectId && <>
             <select aria-label="Filter status analisis" value={location.status} disabled={busy} onChange={event => updateFilters({ status: event.target.value as AnalysisStatus | "" })}><option value="">Semua status</option>{ANALYSIS_STATUSES.map(status => <option key={status} value={status}>{analysisStatusLabel[status]}</option>)}</select>
             <select aria-label="Filter periode analisis" value={location.period} disabled={busy} onChange={event => updateFilters({ period: event.target.value })}><option value="">Semua periode</option>{periods.map(period => <option key={period} value={period}>{period}</option>)}<option value="NONE">Tanpa periode</option></select>
           </>}
           {hasFilters && <button type="button" disabled={busy} onClick={() => updateFilters(location.projectId ? { analysisQuery: "", status: "", period: "" } : { projectQuery: "" })}>Reset filter</button>}
-          <span className="project-result-count" aria-live="polite">{location.projectId ? `${visibleAnalyses.length} dari ${analyses.length} analisis` : `${visibleProjects.length} dari ${projects.length} proyek`}</span>
+          <span className="project-result-count" aria-live="polite">{location.projectId ? `${visibleAnalyses.length} dari ${analysisPage.total} analisis` : `${visibleProjects.length} dari ${projects.length} proyek`}</span>
         </div>}
         {newWorkbookProjectId !== null && <form key={newWorkbookProjectId} id="project-create-form" className="project-create-form" onSubmit={event => {
           const form = submit(event);
@@ -516,7 +535,7 @@ export function ProcurementWorkspace() {
             </fieldset>
           </CardContent>
           <CardFooter className="project-create-actions">
-            <button type="submit" className="project-create-secondary" value="empty" disabled={busy}>Workbook kosong</button>
+            <button type="submit" className="project-create-secondary" value="empty" disabled={busy}>Buat workbook</button>
             <button type="button" className="project-create-cancel" disabled={busy} onClick={() => setNewWorkbookProjectId(null)}>Batal</button>
           </CardFooter>
         </form>}
@@ -532,7 +551,7 @@ export function ProcurementWorkspace() {
               <button type="button" className="analysis-edit" aria-label={`Edit ${analysis.name}`} title="Edit analisis" disabled={busy} onClick={() => setAnalysisToEdit(analysis)}><Pencil aria-hidden="true" /></button>
               <button type="button" className="analysis-delete" aria-label={`Hapus ${analysis.name}`} title="Hapus" disabled={busy} onClick={() => removeAnalysis(selectedProject.id, analysis)}><Trash2 aria-hidden="true" /></button>
             </span>
-          </div>) : <div className="project-empty"><p>{analyses.length ? "Tidak ada analisis yang sesuai filter." : "Belum ada analisis dalam proyek ini."}</p></div>}
+          </div>) : <div className="project-empty"><p>{hasFilters ? "Tidak ada analisis yang sesuai filter." : "Belum ada analisis pada halaman ini."}</p></div>}
         </div> : <div className="project-empty"><p>Proyek tidak ditemukan atau tidak dapat diakses.</p><button type="button" disabled={busy} onClick={showProjectList}>Kembali ke daftar proyek</button></div>
         : visibleProjects.length ? <ol className="project-list">
           {visibleProjects.map((project, index) => {

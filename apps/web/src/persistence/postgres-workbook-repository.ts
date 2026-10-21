@@ -1,14 +1,16 @@
 import type postgres from "postgres";
-import type { SavedWorkbook, SaveOutcome } from "../application/contracts.ts";
-import { parseStableId } from "../domain/ids.ts";
+import { createHash } from "node:crypto";
+import type { AnalysisListItem, AnalysisPage, AnalysisUpdateOutcome, SavedWorkbook, SaveOutcome } from "../application/contracts.ts";
+import { createStableId, parseStableId } from "../domain/ids.ts";
 import type { StableId } from "../domain/ids.ts";
 import { canonicalJson, freeze } from "../domain/snapshots.ts";
 import { DomainValidationError, requireCondition } from "../domain/validation.ts";
 import { captureSavedWorkbook, parseSaveRequest, planSave } from "./current-workbook.ts";
 import type { CurrentRecord } from "./current-workbook.ts";
-import { enterRuntimeRole } from "./runtime-role.ts";
+import { enterRuntimeRole, WorkbookUpgradeRequiredError } from "./runtime-role.ts";
 import { encodeWorkbook, decodeWorkbook } from "./workbook-data.ts";
-import { analysisPeriod } from "../domain/analysis-creation.ts";
+import { parseAnalysisList } from "./analysis-list.ts";
+import type { AnalysisListQuery } from "./analysis-list.ts";
 import { ANALYSIS_STATUSES } from "../domain/analysis-status.ts";
 import type { AnalysisStatus } from "../domain/analysis-status.ts";
 
@@ -26,7 +28,6 @@ export class PostgresWorkbookRepository {
 
   async transaction<T>(work: (tx: Tx) => Promise<T>): Promise<T> {
     return await this.sql.begin(async tx => {
-      await tx`set local statement_timeout = '15s'`;
       await enterRuntimeRole(tx);
       await tx`select set_config('request.jwt.claim.sub', ${this.actorId}, true),
         set_config('request.jwt.claims', ${JSON.stringify({ sub: this.actorId, role: "authenticated" })}, true)`;
@@ -54,37 +55,75 @@ export class PostgresWorkbookRepository {
   async listProjects() {
     return this.transaction(async tx => freeze([...(await tx<{ id: string; name: string }[]>`select id, name from procurement.projects order by id`)]));
   }
-  async listAnalyses(projectId: unknown) {
+  async listAnalyses(projectId: unknown, options: AnalysisListQuery = {}): Promise<AnalysisPage> {
     const id = parseStableId<"project">(projectId);
-    return this.transaction(async tx => freeze((await tx<{ id: string; name: string; project_id: string; status: AnalysisStatus; data: unknown; project_name: string }[]>`
-      select a.id, a.name, a.project_id, a.status, c.data, p.name as project_name
-      from procurement.analyses a
-      join procurement.current_workbooks c on c.analysis_id = a.id and c.owner_id = a.owner_id
-      join procurement.projects p on p.id = a.project_id and p.owner_id = a.owner_id
-      where a.project_id = ${id} order by a.id`).map(row => {
-        const decoded = decodeWorkbook(row.data, { analysisId: row.id, projectId: row.project_id, analysisName: row.name, projectName: row.project_name });
-        const date = decoded.snapshot.worksheets.find(w => w.stage === "AHS")?.tables.flatMap(t => t.cells.map(cell => ({ cell, label: t.rows.find(r => r.id === cell.rowId)?.label,
-          address: decoded.snapshot.workbook?.cells.find(presentation => presentation.cellId === cell.id)?.address }))).find(item =>
-          item.label === "Tgl Analisis (Rn)" || item.address === (item.cell.scope === "INU" ? "H4" : "H3"))?.cell;
-        const value = date?.source.kind === "INPUT" && date.source.input.kind === "TEXT" ? date.source.input.text : "";
-        const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(value);
-        const period = match ? analysisPeriod(`${match[3]}-${match[2]}-${match[1]}`) : "";
-        return { id: row.id, name: row.name, project_id: row.project_id, status: row.status, period: period || null };
-      })));
+    const q = parseAnalysisList(options);
+    return this.transaction(async tx => {
+      const [result] = await tx<{ items: AnalysisListItem[]; total: number; periods: string[]; has_before: boolean; has_after: boolean }[]>`
+        with scoped as materialized (
+          select a.id, a.name, a.project_id, a.status, c.version,
+            case when c.analysis_date is null then null else
+              'P' || case when extract(day from c.analysis_date) <= 14 then '1' else '2' end || '-' ||
+              (array['JAN','FEB','MAR','APR','MEI','JUN','JUL','AGU','SEP','OKT','NOV','DES'])[extract(month from c.analysis_date)::int] || '-' ||
+              lpad(extract(year from c.analysis_date)::text,4,'0') end as period
+          from procurement.analyses a
+          join procurement.current_workbooks c on c.analysis_id = a.id and c.owner_id = a.owner_id
+          join procurement.projects p on p.id = a.project_id and p.owner_id = a.owner_id
+          where a.project_id = ${id} and a.owner_id = ${this.actorId}
+        ), filtered as materialized (
+          select * from scoped where position(lower(${q.query}) in lower(name)) > 0
+            and (${q.status} = '' or status = ${q.status})
+            and (${q.period} = '' or (${q.period} = 'NONE' and period is null) or period = ${q.period})
+            and (${q.analysisId}::uuid is null or id = ${q.analysisId})
+        ), page as materialized (
+          select * from filtered where (${q.after}::uuid is null or id > ${q.after})
+            and (${q.before}::uuid is null or id < ${q.before})
+          order by ${q.before ? tx`id desc` : tx`id asc`} limit ${q.limit}
+        ) select coalesce((select jsonb_agg(page order by id) from page), '[]'::jsonb) as items,
+          (select count(*)::int from filtered) as total,
+          array(select distinct period from scoped where period is not null order by period) as periods,
+          exists(select 1 from filtered where id < (select id from page order by id limit 1)) as has_before,
+          exists(select 1 from filtered where id > (select id from page order by id desc limit 1)) as has_after`;
+      const items = result!.items.map(item => ({ ...item, version: parseStableId<"version">(item.version) }));
+      return freeze({ items, total: result!.total, periods: result!.periods,
+        previousCursor: result!.has_before ? items[0]!.id : null,
+        nextCursor: result!.has_after ? items.at(-1)!.id : null });
+    }).catch(error => {
+      if (error && typeof error === "object" && "code" in error && error.code === "42703") throw new WorkbookUpgradeRequiredError();
+      throw error;
+    });
   }
 
-  async updateAnalysis(value: unknown, actorId: unknown, name: unknown, status: unknown) {
+  async updateAnalysis(value: unknown, actorId: unknown, name: unknown, status: unknown, expected: unknown, mutation: unknown): Promise<AnalysisUpdateOutcome> {
     const analysisId = parseStableId<"analysis">(value);
     const actor = parseStableId<"user">(actorId);
     requireCondition(actor === this.actorId, "Resource unavailable or access denied.");
     requireCondition(typeof name === "string" && name.trim().length > 0, "Nama analisis wajib diisi.");
     requireCondition(typeof status === "string" && ANALYSIS_STATUSES.includes(status as AnalysisStatus), "Status analisis tidak valid.");
+    const expectedVersion = parseStableId<"version">(expected), mutationId = parseStableId<"mutation">(mutation);
+    const signature = createHash("sha256").update(canonicalJson({ operation: "UPDATE_ANALYSIS", analysisId, actor, name, status, expectedVersion, mutationId })).digest("hex");
     return this.transaction(async tx => {
+      const [analysis] = await tx<{ project_id: string }[]>`select project_id from procurement.analyses where id = ${analysisId}`;
+      if (!analysis) throw new AccessDeniedError();
+      await tx`select pg_advisory_xact_lock_shared(hashtextextended(${'project:' + analysis.project_id}, 0))`;
+      await tx`select pg_advisory_xact_lock(hashtextextended(${'analysis:' + analysisId}, 0))`;
+      const [current] = await tx<{ version: string; mutation_id: string; request_signature: string; name: string; status: AnalysisStatus }[]>`
+        select c.version, c.mutation_id, c.request_signature, a.name, a.status from procurement.current_workbooks c
+        join procurement.analyses a on a.id = c.analysis_id and a.owner_id = c.owner_id where c.analysis_id = ${analysisId}`;
+      if (!current) throw new AccessDeniedError();
+      if (current.mutation_id === mutationId) {
+        if (current.request_signature !== signature) return { status: "REJECTED", code: "IDEMPOTENCY_CONFLICT", reason: "Mutation ID already used with another request." };
+        return { id: analysisId, name: current.name, status: current.status, version: parseStableId<"version">(current.version) };
+      }
+      if (current.version !== expectedVersion) return { status: "CONFLICT", code: "STALE_VERSION", expectedVersion, currentVersion: parseStableId<"version">(current.version) };
+      const version = createStableId<"version">();
       const [updated] = await tx<{ id: string; name: string; status: AnalysisStatus }[]>`
         update procurement.analyses set name = ${name.trim()}, status = ${status}
         where id = ${analysisId} and owner_id = ${actor} returning id, name, status`;
       if (!updated) throw new AccessDeniedError();
-      return { ...updated };
+      await tx`update procurement.current_workbooks set version = ${version}, mutation_id = ${mutationId}, request_signature = ${signature}
+        where analysis_id = ${analysisId}`;
+      return { ...updated, version };
     });
   }
 
@@ -124,21 +163,26 @@ export class PostgresWorkbookRepository {
       const persistenceStarted = performance.now();
       const outcome = await this.transaction(async tx => {
         const s = request.snapshot;
-        await tx`select pg_advisory_xact_lock(hashtextextended(${'project:' + s.projectId}, 0))`;
+        await tx`select pg_advisory_xact_lock_shared(hashtextextended(${'project:' + s.projectId}, 0))`;
         await tx`select pg_advisory_xact_lock(hashtextextended(${'analysis:' + s.analysisId}, 0))`;
         const prior = await this.#current(tx, s.analysisId);
         const next = planSave(request, actor, signature, prior);
         if (!("record" in next) || next.record === prior) return next.outcome;
-        await tx`insert into procurement.projects (id, owner_id, name) values (${s.projectId}, ${actor}, ${s.project.name}) on conflict (id) do nothing`;
-        const [project] = await tx`select id from procurement.projects where id = ${s.projectId}`;
-        if (!project) throw new AccessDeniedError();
-        await tx`insert into procurement.analyses (id, project_id, owner_id, name)
-          values (${s.analysisId}, ${s.projectId}, ${actor}, ${s.analysis.analysis.name}) on conflict (id) do nothing`;
-        const [analysis] = await tx`select project_id from procurement.analyses where id = ${s.analysisId}`;
-        if (!analysis) throw new AccessDeniedError();
-        requireCondition(analysis.project_id === s.projectId, "An analysis cannot move to another project.");
-        await tx`update procurement.projects set name = ${s.project.name} where id = ${s.projectId}`;
-        await tx`update procurement.analyses set name = ${s.analysis.analysis.name} where id = ${s.analysisId}`;
+        if (prior && next.record.workbook === prior.workbook) {
+          await tx`update procurement.current_workbooks set mutation_id = ${request.mutationId}, request_signature = ${signature} where analysis_id = ${s.analysisId}`;
+          return next.outcome;
+        }
+        if (!prior) {
+          await tx`insert into procurement.projects (id, owner_id, name) values (${s.projectId}, ${actor}, ${s.project.name}) on conflict (id) do nothing`;
+          const [project] = await tx`select id, name from procurement.projects where id = ${s.projectId}`;
+          if (!project) throw new AccessDeniedError();
+          requireCondition(project.name === s.project.name, "Project name differs from its stored metadata.");
+          await tx`insert into procurement.analyses (id, project_id, owner_id, name)
+            values (${s.analysisId}, ${s.projectId}, ${actor}, ${s.analysis.analysis.name}) on conflict (id) do nothing`;
+          const [analysis] = await tx`select project_id from procurement.analyses where id = ${s.analysisId}`;
+          if (!analysis) throw new AccessDeniedError();
+          requireCondition(analysis.project_id === s.projectId, "An analysis cannot move to another project.");
+        }
         const w = next.record.workbook;
         const data = tx.json(JSON.parse(canonicalJson(encodeWorkbook(w.snapshot, w.configuration))));
         await tx`insert into procurement.current_workbooks

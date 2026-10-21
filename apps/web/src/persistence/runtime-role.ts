@@ -11,7 +11,8 @@ export class WorkbookUpgradeRequiredError extends Error {
 
 // Check each transaction/connection, not just startup: pooled sessions and grants can change.
 export async function enterRuntimeRole(tx: postgres.TransactionSql): Promise<void> {
-  await tx`set local search_path = pg_catalog, pg_temp`;
+  await tx`select set_config('search_path', 'pg_catalog, pg_temp', true),
+    set_config('statement_timeout', '15s', true), set_config('row_security', 'on', true)`;
   const [identity] = await tx`with recursive reachable(oid) as (
     select oid from pg_roles where rolname = session_user
     union select m.roleid from pg_auth_members m join reachable r on r.oid = m.member
@@ -30,7 +31,6 @@ export async function enterRuntimeRole(tx: postgres.TransactionSql): Promise<voi
     if (error && typeof error === "object" && "code" in error && error.code === "42501") throw new RuntimeDatabaseRoleError();
     throw error;
   }
-  await tx`set local row_security = on`;
   const [privileges] = await tx`with actors as (
     select oid from pg_roles where rolname in (session_user, current_user)
   ), objects as (
