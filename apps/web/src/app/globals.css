@@ -105,7 +105,9 @@ summary { cursor: pointer; padding: .7rem 0; }
 .project-create-fields label { min-width: 0; margin: 0; color: #334155; font-size: 12px; font-weight: 700; }
 .project-create-fields label > span, .form-project-context > span { display: block; margin-bottom: 7px; }
 .project-create-fields input { margin: 0; min-height: 44px; padding: 10px 12px; border-color: #cbd5e1; border-radius: 6px; background: #fff; font-size: 14px; transition: border-color .15s ease, box-shadow .15s ease; }
+.project-create-fields select { margin: 0; min-height: 44px; padding: 10px 12px; border-color: #cbd5e1; border-radius: 6px; background: #fff; color: #172b3a; font-size: 14px; }
 .project-create-fields input:focus { border-color: #64748b; box-shadow: 0 0 0 3px #64748b1a; outline: 0; }
+#project-create-form select[name="document"]:focus, #project-create-form select[name="document"]:focus-visible { border-color: #cbd5e1; box-shadow: none; outline: 0; }
 .project-create-fields input::placeholder { color: #94a3b8; }
 .project-create-fields input[readonly] { background: #f8fafc; color: #334155; }
 .form-project-context { margin-bottom: 24px; padding: 12px 14px; border: 1px solid #e2e8f0; border-radius: 6px; background: #f8fafc; color: #64748b; font-size: 11px; }
@@ -271,6 +273,13 @@ summary { cursor: pointer; padding: .7rem 0; }
 .procurement-sheet .sheet-cell > .sheet-input { position: absolute; inset: 0; width: 100%; height: 100%; min-width: 0; min-height: 0; box-sizing: border-box; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: transparent; font: inherit; text-align: inherit; }
 .procurement-sheet .sheet-cell > .sheet-input:focus { color: inherit; outline: none; }
 .procurement-sheet .sheet-cell > .sheet-input[data-invalid="true"] { color: inherit; }
+.procurement-sheet :is(td, th):has(.sheet-input:focus) { background: #fff; }
+.procurement-sheet .sheet-cell:has(> .sheet-input:focus) { background: #fff; }
+.procurement-sheet .sheet-input[data-token-preview="true"], .procurement-sheet .sheet-input[data-token-preview="true"]:focus { background: transparent; color: transparent; -webkit-text-fill-color: transparent; caret-color: #172b3a; }
+.procurement-sheet .cell-formula-preview { position: absolute; inset: 0; z-index: 2; overflow: hidden; pointer-events: none; white-space: pre; text-align: left; font: inherit; line-height: inherit; color: #172b3a; background: #fff; }
+.procurement-sheet :is(td, th) > .cell-formula-preview { padding: 4px 8px; }
+.procurement-sheet .sheet-input[data-token-preview="true"] { text-align: left; z-index: 3; background: transparent; }
+.procurement-sheet :has(> .cell-formula-preview) > .cell-print-value { visibility: hidden; }
 .sheet-cell:focus-within > .cell-print-value, .sheet-cell:has(> .sheet-input[data-invalid="true"]) > .cell-print-value { visibility: hidden; }
 .procurement-sheet td:focus-within > .cell-print-value, .procurement-sheet th:focus-within > .cell-print-value { visibility: hidden; }
 .procurement-sheet .sheet-spacer td { padding: 0; height: 10px; border-color: transparent; background: #f8fafc; }
@@ -322,8 +331,19 @@ summary { cursor: pointer; padding: .7rem 0; }
 .sheet-canvas-toolbar { position: sticky; top: 0; z-index: 20; padding-bottom: 12px; box-shadow: 0 3px 8px #0f172a14; }
 .sheet-canvas-toolbar .toolbar-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
 .sheet-canvas-toolbar .formula-bar-form { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; flex: 1; margin: 0; padding: 0; border: 0; }
+.sheet-canvas-toolbar .formula-input-wrap { position: relative; flex: 1; min-width: 150px; height: 36px; }
 .sheet-canvas-toolbar .editor-cell-address { display: inline-flex; align-items: center; justify-content: center; min-width: 64px; height: 36px; padding: 0 8px; box-sizing: border-box; border: 1px solid #a5b1ba; border-radius: 4px; background: #f8fafc; font: 600 14px ui-monospace, monospace; }
-.sheet-canvas-toolbar .formula-bar-form input { flex: 1; min-width: 150px; height: 36px; padding: 5px 10px; margin: 0; font: 14px ui-monospace, monospace; border: 1px solid #a5b1ba; border-radius: 4px; }
+.sheet-canvas-toolbar .formula-bar-form input { position: relative; z-index: 1; width: 100%; min-width: 0; height: 36px; padding: 5px 10px; margin: 0; font: 14px ui-monospace, monospace; border: 1px solid #a5b1ba; border-radius: 4px; }
+.sheet-canvas-toolbar .formula-input-wrap.has-token-preview input { background: transparent; color: transparent; -webkit-text-fill-color: transparent; caret-color: #172b3a; }
+.sheet-canvas-toolbar .formula-token-preview { position: absolute; inset: 0; z-index: 2; overflow: hidden; box-sizing: border-box; padding: 5px 10px; border: 1px solid transparent; border-radius: 4px; color: #172b3a; font: 14px ui-monospace, monospace; line-height: normal; white-space: pre; pointer-events: none; }
+.procurement-sheet .formula-reference-1 { color: #2563eb; }
+.procurement-sheet .formula-reference-2 { color: #dc2626; }
+.procurement-sheet .formula-reference-3 { color: #059669; }
+.procurement-sheet .formula-reference-4 { color: #7c3aed; }
+.procurement-sheet .formula-reference-5 { color: #d97706; }
+.procurement-sheet .formula-reference-6 { color: #0891b2; }
+.procurement-sheet .formula-reference-7 { color: #db2777; }
+.procurement-sheet .formula-reference-8 { color: #4d7c0f; }
 .sheet-canvas-toolbar .formula-meaning { margin: 6px 0 0 74px; color: #475569; font-size: 13px; line-height: 1.4; }
 .sheet-canvas-toolbar button { min-height: 34px; padding: 7px 12px; font-size: 12px; font-weight: 600; border-radius: 8px; background: #fff; color: #334155; border: 1px solid #d7dee8; box-shadow: 0 1px 2px #0f172a0d; transition: background .15s ease, border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
 .sheet-canvas-toolbar button:hover:enabled { background: #f8fafc; border-color: #94a3b8; box-shadow: 0 3px 8px #0f172a14; transform: translateY(-1px); }
@@ -443,10 +463,15 @@ summary { cursor: pointer; padding: .7rem 0; }
 .procurement-sheet .cell-selected { outline: 2px solid #2563eb; outline-offset: -2px; }
 .procurement-sheet .sheet-cell.cell-selected { outline: 0; }
 .procurement-sheet :is(td, th):focus-within,
-.procurement-sheet :is(td, th):has(> .sheet-cell.cell-selected) { outline: 2px solid #2563eb; outline-offset: -2px; z-index: 1; }
-.procurement-sheet :is(td, th).cell-reference-1, .procurement-sheet .sheet-cell.cell-reference-1 { background: #fff7ed !important; box-shadow: inset 0 0 0 2px #f59e0b; }
-.procurement-sheet :is(td, th).cell-reference-2, .procurement-sheet .sheet-cell.cell-reference-2 { background: #f5f3ff !important; box-shadow: inset 0 0 0 2px #8b5cf6; }
-.procurement-sheet :is(td, th).cell-reference-3, .procurement-sheet .sheet-cell.cell-reference-3 { background: #ecfdf5 !important; box-shadow: inset 0 0 0 2px #10b981; }
+.procurement-sheet :is(td, th):has(.sheet-cell.cell-selected) { outline: 2px solid #2563eb; outline-offset: -2px; z-index: 1; }
+.procurement-sheet :is(td, th):is(.cell-reference-1, :has(.cell-reference-1)) { background: #fff !important; box-shadow: inset 0 0 0 2px #2563eb; }
+.procurement-sheet :is(td, th):is(.cell-reference-2, :has(.cell-reference-2)) { background: #fff !important; box-shadow: inset 0 0 0 2px #dc2626; }
+.procurement-sheet :is(td, th):is(.cell-reference-3, :has(.cell-reference-3)) { background: #fff !important; box-shadow: inset 0 0 0 2px #059669; }
+.procurement-sheet :is(td, th):is(.cell-reference-4, :has(.cell-reference-4)) { background: #fff !important; box-shadow: inset 0 0 0 2px #7c3aed; }
+.procurement-sheet :is(td, th):is(.cell-reference-5, :has(.cell-reference-5)) { background: #fff !important; box-shadow: inset 0 0 0 2px #d97706; }
+.procurement-sheet :is(td, th):is(.cell-reference-6, :has(.cell-reference-6)) { background: #fff !important; box-shadow: inset 0 0 0 2px #0891b2; }
+.procurement-sheet :is(td, th):is(.cell-reference-7, :has(.cell-reference-7)) { background: #fff !important; box-shadow: inset 0 0 0 2px #db2777; }
+.procurement-sheet :is(td, th):is(.cell-reference-8, :has(.cell-reference-8)) { background: #fff !important; box-shadow: inset 0 0 0 2px #4d7c0f; }
 
 @media (max-width: 1100px) {
   .procurement-sheet { grid-template-columns: minmax(0, 1fr); }
@@ -556,6 +581,7 @@ summary { cursor: pointer; padding: .7rem 0; }
   .procurement-sheet tr { break-inside: avoid; height: auto !important; }
   .procurement-sheet th, .procurement-sheet td { padding: 1px 3px; height: auto; overflow: visible; white-space: normal; overflow-wrap: anywhere; }
   .procurement-sheet .sheet-input { display: none !important; }
+  .procurement-sheet .cell-formula-preview { display: none !important; }
   .procurement-sheet .cell-print-value { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
   .procurement-sheet .cell-print-value { visibility: visible !important; }
   .procurement-sheet .cell-selected { outline: none; }

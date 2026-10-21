@@ -60,6 +60,7 @@ export function WorksheetSurface(props: SurfaceProps) {
   const { snapshot, run, configuration, disabled, saving = false, onPrintLoading, volumeError, actor, onChange, onError, onEditing, onSave, analysisStatus, onAnalysisStatusChange, onInput, onSelectOffer, onRequestConfirm } = props;
 
   const [selectedCellId, setSelectedCellId] = useState<string | null>(null);
+  const [highlightCellId, setHighlightCellId] = useState<string | null>(null);
   const [formulaExpression, setFormulaExpression] = useState("");
   const [isEditingFormula, setIsEditingFormula] = useState(false);
   const [legacyTarget, setLegacyTarget] = useState<{ stage: Stage; label: string } | null>(null);
@@ -173,11 +174,66 @@ export function WorksheetSurface(props: SurfaceProps) {
   const selectedReadOnly = !!selectedCell && isManagedCell(selectedCell);
   const selectedFormula = snapshot?.formulas.find(formula => formula.targetCellId === selectedCellId && formula.activation === "ACTIVE");
   const selectedMapping = snapshot?.mappings.find(mapping => mapping.targetCellId === selectedCellId && mapping.status === "ACTIVE");
-  const selectedReferenceIds = selectedCellId && (selectedFormula || selectedMapping)
-    ? [...new Set([...(selectedFormula?.referenceCellIds ?? []), ...(selectedMapping ? [selectedMapping.sourceCellId] : [])])]
+  const highlightedFormula = snapshot?.formulas.find(formula => formula.targetCellId === highlightCellId && formula.activation === "ACTIVE");
+  const highlightedMapping = snapshot?.mappings.find(mapping => mapping.targetCellId === highlightCellId && mapping.status === "ACTIVE");
+  const formulaAddressIds = useMemo(() => {
+    const result = new Map<string, string>();
+    for (const [cellId, address] of addresses) result.set(address.replaceAll("$", "").toUpperCase(), cellId);
+    for (const [cellId, code] of codes) result.set(code.replaceAll("$", "").toUpperCase(), cellId);
+    return result;
+  }, [addresses, codes]);
+  const addressPattern = /(?:[A-Z][A-Z0-9-]*!)?\$?[A-Z]{1,3}\$?[1-9]\d*/gi;
+  const draftReferenceIds = formulaExpression.trimStart().startsWith("=")
+    ? formulaExpression.split(/("(?:[^"]|"")*")/g).flatMap((part, index) => index % 2 ? [] :
+      [...part.matchAll(addressPattern)].flatMap(match => {
+        const cellId = formulaAddressIds.get(match[0].replaceAll("$", "").toUpperCase());
+        return cellId ? [cellId] : [];
+      }))
     : [];
-  const selectedReferenceClasses = new Map(selectedReferenceIds.map((cellId, index) => [cellId, `cell-reference-${index % 3 + 1}`]));
-  const referenceClass = (cellId: string) => selectedReferenceClasses.get(cellId as StableId<"cell">) ?? "";
+  const selectedReferenceIds = [...new Set([
+    ...draftReferenceIds,
+    ...(!isEditingFormula ? selectedFormula?.referenceCellIds ?? [] : []),
+    ...(selectedMapping ? [selectedMapping.sourceCellId] : []),
+    ...(!isEditingFormula ? highlightedFormula?.referenceCellIds ?? [] : []),
+    ...(!isEditingFormula && highlightedMapping ? [highlightedMapping.sourceCellId] : []),
+  ])];
+  const referenceAddresses = new Set(selectedReferenceIds.map(cellId => addresses.get(cellId)));
+  const referenceGroups = new Map<string, number>();
+  const selectedReferenceClasses = new Map(selectedReferenceIds.map(cellId => {
+    const address = addresses.get(cellId);
+    const coordinate = address?.match(/^([A-Z]+)(\d+)$/);
+    let group = cellId;
+    if (coordinate) {
+      const column = coordinate[1]!;
+      let row = Number(coordinate[2]);
+      while (referenceAddresses.has(`${column}${row - 1}`)) row--;
+      group = `${column}${row}`;
+    }
+    if (!referenceGroups.has(group)) referenceGroups.set(group, referenceGroups.size);
+    return [cellId, `cell-reference-${referenceGroups.get(group)! % 8 + 1}`];
+  }));
+  const referenceClass = (cellId: string) => highlightCellId ? selectedReferenceClasses.get(cellId) ?? "" : "";
+  const formulaReferenceClass = (token: string) => {
+    const cellId = formulaAddressIds.get(token.replaceAll("$", "").toUpperCase());
+    const className = cellId ? selectedReferenceClasses.get(cellId) ?? "" : "";
+    return className.replace("cell-reference-", "formula-reference-");
+  };
+  const renderFormulaPreview = (expression: string): ReactNode => {
+    if (!expression.trimStart().startsWith("=")) return null;
+    return expression.split(/("(?:[^"]|"")*")/g).flatMap<ReactNode>((part, partIndex) => {
+      if (partIndex % 2) return [<span key={`formula-text-${partIndex}`}>{part}</span>];
+      let cursor = 0;
+      return [...part.matchAll(addressPattern)].flatMap((match, matchIndex) => {
+        const token = match[0], start = match.index ?? 0;
+        const nodes: ReactNode[] = [];
+        if (start > cursor) nodes.push(<span key={`formula-text-${partIndex}-${matchIndex}`}>{part.slice(cursor, start)}</span>);
+        nodes.push(<span key={`formula-reference-${partIndex}-${matchIndex}`} className={formulaReferenceClass(token) || undefined}>{token}</span>);
+        cursor = start + token.length;
+        return nodes;
+      }).concat(cursor < part.length ? [<span key={`formula-text-${partIndex}-tail`}>{part.slice(cursor)}</span>] : []);
+    });
+  };
+  const formulaPreview = renderFormulaPreview(formulaExpression);
   const formulaMeaning = selectedFormula && snapshot && !isEditingFormula ? describeFormula(selectedFormula.expression, snapshot) : "";
   const selectedMerge = selectedTable?.merges.find(m => m.anchorCellId === selectedCellId);
   const selectedTableLayout = snapshot?.workbook?.tables.find(t => t.tableId === selectedTable?.id);
@@ -199,6 +255,7 @@ export function WorksheetSurface(props: SurfaceProps) {
   }
   function cancelFormula() {
     setIsEditingFormula(false);
+    setHighlightCellId(null);
     setFormulaExpression(selectedCell?.source.kind === "INPUT" ? selectedCell.source.input.kind === "UNSET" ? "" : selectedCell.source.input.text
       : selectedCell ? "=" + storedExpression(selectedCell.id) : "");
     skipFormulaBlur.current = document.activeElement === formulaInputRef.current;
@@ -253,6 +310,7 @@ export function WorksheetSurface(props: SurfaceProps) {
     }
     setLegacyTarget(null);
     setSelectedCellId(cellId);
+    setHighlightCellId(null);
     setToolbarError("");
     const formula = snapshot?.formulas.find(f => f.targetCellId === cellId);
     if (formula) {
@@ -268,6 +326,7 @@ export function WorksheetSurface(props: SurfaceProps) {
     if (target && isManagedCell(target)) { handleSelectCell(cellId); return; }
     if (isEditingFormula) { insertReference(cellId); return; }
     setSelectedCellId(cellId);
+    setHighlightCellId(null);
     setLegacyTarget(null);
     setFormulaExpression("=" + (replace ? "" : storedExpression(cellId)));
     setIsEditingFormula(true);
@@ -312,7 +371,7 @@ export function WorksheetSurface(props: SurfaceProps) {
       if (cleared.workbook) return editSheetInput(cleared, { ...target, source: { kind: "INPUT", input: { kind: "UNSET" } } }, input);
       return updateCellInput(cleared, target.scope, target.id, input);
     });
-    if (saved) { setIsEditingFormula(false); setFormulaExpression(isFormula ? raw : isNumber ? numeric : raw); }
+    if (saved) { setIsEditingFormula(false); setHighlightCellId(null); setFormulaExpression(isFormula ? raw : isNumber ? numeric : raw); }
     return saved;
   }
 
@@ -321,11 +380,13 @@ export function WorksheetSurface(props: SurfaceProps) {
       : cell.source.kind === "INPUT" && cell.source.input.kind !== "UNSET" ? cell.source.input.text : "";
     return <span className={`sheet-cell${cell.id === selectedCellId ? " cell-selected" : ""}${referenceClass(cell.id) ? ` ${referenceClass(cell.id)}` : ""}`} data-cell-id={cell.id} data-cell-code={addresses.get(cell.id)}
       title={[addressOf(cell.id), cellError(cell)].filter(Boolean).join(" · ")}
-      onPointerDownCapture={event => handleReferencePointerDown(event, cell.id)} onClickCapture={handleReferenceClick}>
+      onPointerDownCapture={event => handleReferencePointerDown(event, cell.id)} onClickCapture={handleReferenceClick}
+      onDoubleClick={event => { event.stopPropagation(); setHighlightCellId(cell.id); if (!isManagedCell(cell) && raw.trimStart().startsWith("=")) setIsEditingFormula(true); }}>
       {isManagedCell(cell) ? <button type="button" className="cell-readout sheet-result" disabled={disabled}
         aria-label={label} title={isAhsVolumeFollower(snapshot!, cell) ? "Mengikuti Volume Harga Jual · Harga Dasar" : "Mengikuti sumber perhitungan"}
         onClick={() => handleSelectCell(cell.id)}>{cellValue(cell, format)}</button> :
       <WorksheetCellInput key={cell.id} label={label} raw={raw} shown={cellValue(cell, format)} selected={selectedCellId === cell.id}
+      formulaPreview={formulaPreview}
       needsCommit={!!snapshot && isAhsVolumeCell(snapshot, cell) && cell.source.kind === "INPUT" && cell.source.input.kind === "TEXT"}
       editing={isEditingFormula} expression={formulaExpression} disabled={disabled} onFocusInput={input => { formulaCellInputRef.current = input; }}
       onSelect={() => handleSelectCell(cell.id)} onDraft={value => { setFormulaExpression(value); setIsEditingFormula(value.trimStart().startsWith("=")); onEditing?.(); }}
@@ -802,59 +863,24 @@ export function WorksheetSurface(props: SurfaceProps) {
                       displayContent = <span className="sheet-result" title={run.solver.cost}>{sheetNumberFixed(run.solver.cost)}</span>;
                     } else if (meta?.kind === "LABEL") {
                       displayContent = <span className="sheet-result">{stage === "KONVERSI_JAGAD" && rowNum === 23 ? "Konversi Satuan" : cellValue(cell)}</span>;
-                    } else if (isSelected && isEditingFormula) {
-                      displayContent = <><input ref={formulaCellInputRef} className="sheet-input" aria-label={`Rumus ${ariaLabel}`} value={formulaExpression}
-                        disabled={disabled} onChange={event => { setFormulaExpression(event.target.value); onEditing?.(); }}
-                        onKeyDown={event => { if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); formulaInputRef.current?.form?.requestSubmit(); }
-                          if (event.key === "Escape") { event.preventDefault(); cancelFormula(); } }} />
-                        <span className="cell-print-value">{cellValue(cell, stage === "KONVERSI_JAGAD" && rowNum === 42 ? "fixed-number" : "number")}</span></>;
-                    } else if (isManualInput || isFormulaSlot || (cell.source.kind === "FORMULA" && !isHppBase)) {
+                    } else if ((isSelected && isEditingFormula) || isManualInput || isFormulaSlot || (cell.source.kind === "FORMULA" && !isHppBase)) {
                       const raw = cell.source.kind === "FORMULA" ? "=" + storedExpression(cell.id)
                         : cell.source.kind === "INPUT" && cell.source.input.kind !== "UNSET" ? cell.source.input.text : "";
                       const shown = cellValue(cell, stage === "KONVERSI_JAGAD" && rowNum === 42 ? "fixed-number" : "number");
-                      displayContent = <>
-                        <input
-                          key={cell.id + ":" + raw}
-                          className="sheet-input"
-                          aria-label={ariaLabel}
-                          defaultValue={shown}
-                          disabled={disabled}
-                          inputMode="text"
-                          onFocus={event => { handleSelectCell(cell.id); if (event.currentTarget.dataset.invalid !== "true") event.currentTarget.value = raw; event.currentTarget.select(); }}
-                          onChange={event => {
-                            event.currentTarget.dataset.invalid = "false";
-                            setFormulaExpression(event.target.value);
-                            onEditing?.();
-                            if (event.target.value.trimStart().startsWith("=")) {
-                              event.currentTarget.dataset.formulaEditing = "true";
-                              setIsEditingFormula(true);
-                              requestAnimationFrame(() => {
-                                const input = formulaCellInputRef.current;
-                                input?.focus();
-                                input?.setSelectionRange(input.value.length, input.value.length);
-                              });
-                            }
-                          }}
-                          onKeyDown={event => { if (event.key === "Enter") {
-                            event.preventDefault(); event.currentTarget.blur();
-                          } else if (event.key === "Escape") {
-                            event.preventDefault(); event.currentTarget.value = raw; event.currentTarget.dataset.invalid = "false"; event.currentTarget.blur();
-                          } }}
-                          onBlur={event => {
-                            if (event.currentTarget.dataset.formulaEditing === "true") return;
-                            if (event.target.value !== raw) event.currentTarget.dataset.invalid = commitCellValue(cell, event.target.value) ? "false" : "true";
-                            else event.currentTarget.value = shown;
-                          }}
-                        />
-                        <span className="cell-print-value">{shown}</span>
-                      </>;
+                      displayContent = <WorksheetCellInput key={cell.id} label={ariaLabel} raw={raw} shown={shown}
+                        selected={isSelected} editing={isEditingFormula} expression={formulaExpression}
+                        formulaPreview={formulaPreview} disabled={disabled}
+                        onFocusInput={input => { formulaCellInputRef.current = input; }}
+                        onSelect={() => handleSelectCell(cell.id)}
+                        onDraft={value => { setFormulaExpression(value); setIsEditingFormula(value.trimStart().startsWith("=")); onEditing?.(); }}
+                        onCommit={value => commitCellValue(cell, value)} onCancel={cancelFormula} />;
                     } else {
                       const val = cellValue(cell, stage === "KONVERSI_JAGAD" && rowNum === 42 ? "fixed-number" : "number");
                       displayContent = <button type="button" className="cell-readout sheet-result" disabled={disabled}
                         aria-label={`${ariaLabel} · ${val}`}
                         title={[cellAddress, cellError(cell) ?? (isHppBase ? "Mengikuti Biaya Konversi" : val)].filter(Boolean).join(" · ")}
                         onClick={event => { event.stopPropagation(); handleSelectCell(cell.id); }}
-                        onDoubleClick={event => { event.stopPropagation(); if (!isHppBase && (cell.source.kind === "FORMULA" || isFormulaSlot)) startCellFormula(cell.id); }}
+                        onDoubleClick={event => { event.stopPropagation(); if (!isHppBase && (cell.source.kind === "FORMULA" || isFormulaSlot)) startCellFormula(cell.id); setHighlightCellId(cell.id); }}
                         onKeyDown={event => { if (!isHppBase && (cell.source.kind === "FORMULA" || isFormulaSlot) && event.key === "=") {
                           event.preventDefault(); event.stopPropagation(); startCellFormula(cell.id, true);
                         } else if (!isHppBase && cell.source.kind === "FORMULA" && /^\d$/.test(event.key)) {
@@ -881,6 +907,7 @@ export function WorksheetSurface(props: SurfaceProps) {
                           else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); handleSelectCell(cell.id); }
                         }}
                         onClick={event => { if (!(event.target instanceof HTMLInputElement)) handleSelectCell(cell.id); }}
+                        onDoubleClick={event => { event.stopPropagation(); setHighlightCellId(cell.id); if (!isManagedCell(cell) && cell.source.kind === "FORMULA") setIsEditingFormula(true); }}
                       >
                         {colMeta?.label === "I" && stage === "AHS" && ((rowNum >= 14 && rowNum <= 33) || addedAhsRows.has(rowId)) && <span>Rp</span>}
                         {trClass === "vendor-title" && colIndex === row.findIndex(item => item?.cell) ?
@@ -925,10 +952,13 @@ export function WorksheetSurface(props: SurfaceProps) {
             <div className="toolbar-row formula-row">
               <span className="editor-cell-address" aria-label="Alamat sel">{activeCellAddress}</span>
               <form className="formula-bar-form" onSubmit={handleApplyFormula}>
+                <span className={`formula-input-wrap${formulaPreview ? " has-token-preview" : ""}`}>
+                  {formulaPreview && <span className="formula-token-preview" aria-hidden="true">{formulaPreview}</span>}
                 <input
                   ref={formulaInputRef}
                   aria-label="Formula sel terpilih"
                   value={formulaExpression}
+                  onScroll={event => { const preview = event.currentTarget.previousElementSibling; if (preview instanceof HTMLElement) preview.scrollLeft = event.currentTarget.scrollLeft; }}
                   data-editing={isEditingFormula}
                   readOnly={selectedReadOnly}
                   onChange={e => { setIsEditingFormula(true); setFormulaExpression(e.target.value); onEditing?.(); }}
@@ -937,6 +967,7 @@ export function WorksheetSurface(props: SurfaceProps) {
                   placeholder={selectedCell ? "Ketik formula atau klik sel lain untuk menyisipkan referensi" : "Pilih sel pada tabel"}
                   disabled={disabled || (!selectedCell && !legacyTarget)}
                 />
+                </span>
                 <button className="toolbar-button toolbar-button-primary" type="submit" disabled={disabled || selectedReadOnly || (!selectedCell && !legacyTarget)}>Terapkan</button>
                 {isEditingFormula && <button className="toolbar-button" type="button" onClick={cancelFormula}>Batal edit</button>}
               </form>
@@ -1032,6 +1063,7 @@ export function WorksheetSurface(props: SurfaceProps) {
     if (isEditingFormula && cell && formulaExpression.trimStart().startsWith("=")) { insertReference(cell.id); return; }
     if (isEditingFormula) return;
     setSelectedCellId(cell?.id ?? null);
+    setHighlightCellId(null);
     setLegacyTarget({ stage, label });
     setFormulaExpression(cell?.source.kind === "INPUT" ? cell.source.input.kind === "UNSET" ? "" : cell.source.input.text : cell?.source.kind === "FORMULA" ? "=" + storedExpression(cell.id) : "");
     setToolbarError("");
@@ -1048,29 +1080,24 @@ export function WorksheetSurface(props: SurfaceProps) {
     if (cell && (stage === "EVALUASI_VENDOR" || (snapshot && isAhsVolumeCell(snapshot, cell)))) content = worksheetCellEditor(cell, `${stage === "EVALUASI_VENDOR" ? "Evaluasi Vendor" : "Lembar AHS"} · ${label}`);
     else if (cell?.source.kind === "FORMULA" && !pinned && !solverCost && cell.id !== snapshot?.profiles[snapshot.activeProfile].hppBase.cellId) {
       const raw = "=" + storedExpression(cell.id), shown = cellValue(cell, label === "PERSENTASE" ? "percentage" : label === "Profit MUE" ? "fixed-number" : "number");
-      content = (<Fragment key={cell.id + ":" + raw}><input className="sheet-input" aria-label={`Lembar ${stage} · ${label}`}
-        defaultValue={shown} disabled={disabled || !snapshot} inputMode="text"
-        onFocus={event => { selectLegacy(stage, label, cell); if (event.currentTarget.dataset.invalid !== "true") event.currentTarget.value = raw; event.currentTarget.select(); }}
-        onChange={event => { event.currentTarget.dataset.invalid = "false"; setFormulaExpression(event.target.value); onEditing?.();
-          if (event.target.value.trimStart().startsWith("=")) {
-            event.currentTarget.dataset.formulaEditing = "true"; setIsEditingFormula(true); focusFormulaBar();
-          } }}
-        onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); }
-          else if (event.key === "Escape") { event.preventDefault(); event.currentTarget.value = raw; event.currentTarget.dataset.invalid = "false"; event.currentTarget.blur(); } }}
-        onBlur={event => { if (event.currentTarget.dataset.formulaEditing === "true") return;
-          if (event.target.value !== raw) event.currentTarget.dataset.invalid = commitCellValue(cell, event.target.value) ? "false" : "true";
-          else event.currentTarget.value = shown; }} /><span className="cell-print-value">{shown}</span></Fragment>);
+      content = <WorksheetCellInput key={cell.id} label={`Lembar ${stage} · ${label}`} raw={raw} shown={shown}
+        selected={selectedCellId === cell.id} editing={isEditingFormula} expression={formulaExpression}
+        formulaPreview={formulaPreview} disabled={disabled || !snapshot}
+        onFocusInput={input => { formulaCellInputRef.current = input; }}
+        onSelect={() => selectLegacy(stage, label, cell)}
+        onDraft={value => { setFormulaExpression(value); setIsEditingFormula(value.trimStart().startsWith("=")); onEditing?.(); }}
+        onCommit={value => commitCellValue(cell, value)} onCancel={cancelFormula} />;
     } else if (cell && (cell.source.kind !== "INPUT" || pinned || solverCost)) { content = (<button type="button" className="cell-readout sheet-result"
       title={[addressOf(cell.id), cellError(cell) ?? cellValue(cell, label === "PERSENTASE" ? "percentage" : label === "Profit MUE" ? "fixed-number" : "number")].filter(Boolean).join(" · ")} disabled={disabled} onClick={() => {
         selectLegacy(stage, label, cell);
       }}
-      onDoubleClick={() => { if (cell.source.kind === "FORMULA" && cell.id !== snapshot?.profiles[snapshot.activeProfile].hppBase.cellId) { setIsEditingFormula(true); focusFormulaBar(); } }}
+      onDoubleClick={() => { setHighlightCellId(cell.id); if (cell.source.kind === "FORMULA" && cell.id !== snapshot?.profiles[snapshot.activeProfile].hppBase.cellId) { setIsEditingFormula(true); focusFormulaBar(); } }}
       onKeyDown={event => { if (event.key === "=" && cell.id !== snapshot?.profiles[snapshot.activeProfile].hppBase.cellId) { event.preventDefault(); selectLegacy(stage, label, cell); setFormulaExpression("="); setIsEditingFormula(true); focusFormulaBar(); } }}>{cellValue(cell, label === "PERSENTASE" ? "percentage" : label === "Profit MUE" ? "fixed-number" : "number")}</button>);
     } else {
       const raw = cell?.source.kind === "INPUT" && cell.source.input.kind !== "UNSET" ? cell.source.input.text : "";
       content = (<Fragment key={(cell?.id ?? label) + ":" + raw}><input className="sheet-input" aria-label={`Lembar ${stage} · ${label}`}
         defaultValue={raw} disabled={disabled || !snapshot} inputMode={kind === "TEXT" ? "text" : "decimal"}
-        onFocus={event => { selectLegacy(stage, label, cell); if (cell) event.currentTarget.select(); }}
+        onFocus={() => { selectLegacy(stage, label, cell); }}
         onChange={event => { event.currentTarget.dataset.invalid = "false"; setFormulaExpression(event.target.value); onEditing?.();
           if (event.target.value.trimStart().startsWith("=")) {
             event.currentTarget.dataset.formulaEditing = "true"; setIsEditingFormula(true); focusFormulaBar();
@@ -1092,10 +1119,11 @@ export function WorksheetSurface(props: SurfaceProps) {
           }
         }} /><span className="cell-print-value">{raw ? kind === "TEXT" ? raw : label === "PERSENTASE" ? sheetPercent(raw) : label === "Profit MUE" ? sheetNumberFixed(raw) : sheetNumber(raw) : ""}</span></Fragment>);
     }
-    return <span className={`sheet-cell${cell?.id === selectedCellId ? " cell-selected" : ""}`}
+    return <span className={`sheet-cell${cell?.id === selectedCellId ? " cell-selected" : ""}${cell && referenceClass(cell.id) ? ` ${referenceClass(cell.id)}` : ""}`}
       data-cell-id={cell?.id} data-cell-code={code} title={cell ? [addressOf(cell.id), cellError(cell)].filter(Boolean).join(" · ") : undefined}
       onPointerDownCapture={event => { if (cell) handleReferencePointerDown(event, cell.id); }}
-      onClickCapture={event => { if (cell) handleReferenceClick(event); }}>{content}</span>;
+      onClickCapture={event => { if (cell) handleReferenceClick(event); }}
+      onDoubleClick={event => { if (cell) { event.stopPropagation(); setHighlightCellId(cell.id); if (!isManagedCell(cell) && cell.source.kind === "FORMULA") setIsEditingFormula(true); } }}>{content}</span>;
   }
 
   function vendorSlot(address: string, label: string) {
@@ -1158,13 +1186,17 @@ export function WorksheetSurface(props: SurfaceProps) {
           <div className="toolbar-row formula-row">
             <span className="editor-cell-address" aria-label="Alamat sel">{activeCellAddress}</span>
             <form className="formula-bar-form" onSubmit={handleApplyFormula}>
+              <span className={`formula-input-wrap${formulaPreview ? " has-token-preview" : ""}`}>
+                {formulaPreview && <span className="formula-token-preview" aria-hidden="true">{formulaPreview}</span>}
               <input ref={formulaInputRef} aria-label="Formula sel terpilih" value={formulaExpression} data-editing={isEditingFormula}
+                onScroll={event => { const preview = event.currentTarget.previousElementSibling; if (preview instanceof HTMLElement) preview.scrollLeft = event.currentTarget.scrollLeft; }}
                 readOnly={selectedReadOnly}
                 disabled={disabled || (!selectedCell && !legacyTarget)}
                 onChange={event => { setIsEditingFormula(true); setFormulaExpression(event.target.value); onEditing?.(); }}
                 onKeyDown={handleFormulaKeyDown}
                 onBlur={handleFormulaBlur}
                 placeholder="Ketik = lalu klik sel sumber" />
+              </span>
               <button className="toolbar-button toolbar-button-primary" disabled={disabled || selectedReadOnly || (!selectedCell && !legacyTarget)}>Terapkan</button>
               {isEditingFormula && <button className="toolbar-button" type="button" onClick={cancelFormula}>Batal edit</button>}
             </form>

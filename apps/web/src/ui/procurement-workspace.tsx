@@ -65,6 +65,7 @@ export function ProcurementWorkspace() {
   const sessionChannel = useRef<BroadcastChannel | null>(null);
   const [newWorkbookProjectId, setNewWorkbookProjectId] = useState<string | null>(null);
   const [newAnalysisDate, setNewAnalysisDate] = useState("");
+  const [newDocumentType, setNewDocumentType] = useState("FULL DOC");
   const [analysisToDelete, setAnalysisToDelete] = useState<{ projectId: string; analysis: AnalysisListItem } | null>(null);
   const [analysisToEdit, setAnalysisToEdit] = useState<AnalysisListItem | null>(null);
   const [projectToDelete, setProjectToDelete] = useState<ProjectListItem | null>(null);
@@ -174,6 +175,7 @@ export function ProcurementWorkspace() {
   }
   function showAnalysisForm(projectId: string) {
     setNewAnalysisDate(analysisDateInput());
+    setNewDocumentType("FULL DOC");
     setNewWorkbookProjectId(projectId);
     setError("");
   }
@@ -441,6 +443,12 @@ export function ProcurementWorkspace() {
   const periods = [...analysisPage.periods];
   if (location.period && location.period !== "NONE" && !periods.includes(location.period)) periods.push(location.period);
   const hasFilters = location.projectId ? Boolean(location.analysisQuery || location.status || location.period) : Boolean(location.projectQuery);
+  const documentExamples: Record<string, { project: string; analysis: string }> = {
+    "FULL DOC": { project: "Proyek Pengadaan HSD - Full Doc", analysis: "Analisis Vendor - Full Doc" },
+    PPN: { project: "Proyek Pengadaan HSD - PPN", analysis: "Analisis Vendor - PPN" },
+    "NON PPN": { project: "Proyek Pengadaan HSD - Non PPN", analysis: "Analisis Vendor - Non PPN" },
+  };
+  const selectedDocumentExample = documentExamples[newDocumentType] ?? documentExamples["FULL DOC"];
 
   return <main className={actor ? "workbook-app" : "login-app"}>
     <header className="app-header" hidden={!actor}>
@@ -518,23 +526,23 @@ export function ProcurementWorkspace() {
             <fieldset className="project-create-fields" disabled={busy}>
               <legend className="sr-only">Identitas analisis</legend>
               <div className="project-create-section-heading" aria-hidden="true">Identitas analisis</div>
-              {!newWorkbookProjectId && <label className="project-create-wide"><span>Nama proyek *</span><input name="projectName" placeholder="Contoh: Pembangunan Gedung A" required /></label>}
-              <label className="project-create-wide"><span>Nama analisis *</span><input name="analysisName" placeholder="Contoh: Evaluasi vendor Oktober" required /></label>
+              {!newWorkbookProjectId && <label className="project-create-wide"><span>Nama proyek *</span><input name="projectName" placeholder={selectedDocumentExample.project} required /></label>}
+              <label className="project-create-wide"><span>Nama analisis *</span><input name="analysisName" placeholder={selectedDocumentExample.analysis} required /></label>
               <label><span>Tanggal analisis *</span><input name="analysisDate" type="date" value={newAnalysisDate} onChange={event => setNewAnalysisDate(event.target.value)} required /></label>
               <label><span>Periode</span><input value={analysisPeriod(newAnalysisDate)} readOnly aria-describedby="analysis-period-help" />
                 <small id="analysis-period-help" className="field-help">P1: tanggal 1–14 · P2: tanggal 15–akhir bulan.</small></label>
-              <label className="project-create-wide"><span>Pekerjaan / Material *</span><input name="material" placeholder="Contoh: HSD" required /></label>
+              <label className="project-create-wide"><span>Pekerjaan / Material *</span><input name="material" placeholder="HSD" required /></label>
               <label><span>Customer *</span><input name="customer" placeholder="Nama customer" required /></label>
               <label><span>Lokasi *</span><input name="location" placeholder="Lokasi pekerjaan" required /></label>
             </fieldset>
             <fieldset className="project-create-fields" disabled={busy}>
               <legend className="sr-only">Informasi AHS</legend>
               <div className="project-create-section-heading" aria-hidden="true">Informasi AHS</div>
-              <label className="project-create-wide"><span>Volume (L)</span><input name="volume" type="text" inputMode="decimal" placeholder="Contoh: 50.000" /></label>
-              <label><span>Marketing</span><input name="marketing" placeholder="Nama marketing" /></label>
-              <label><span>Pembayaran</span><input name="payment" placeholder="Contoh: 30 hari" /></label>
+              <label className="project-create-wide"><span>Volume (L) *</span><input name="volume" type="text" inputMode="decimal" placeholder="50.000" required /></label>
+              <label><span>Marketing *</span><input name="marketing" placeholder="Nama marketing" required /></label>
+              <label><span>Pembayaran *</span><input name="payment" placeholder="30 hari" required /></label>
               <label><span>Harga Keekonomian</span><input name="economicPrice" placeholder="Isi jika tersedia" /></label>
-              <label><span>Dokumen</span><input name="document" placeholder="Nomor atau keterangan dokumen" /></label>
+              <label><span>Dokumen *</span><select name="document" value={newDocumentType} onChange={event => setNewDocumentType(event.target.value)} aria-label="Dokumen" required><option value="FULL DOC">Full Doc</option><option value="PPN">PPN</option><option value="NON PPN">Non PPN</option></select></label>
             </fieldset>
           </CardContent>
           <CardFooter className="project-create-actions">

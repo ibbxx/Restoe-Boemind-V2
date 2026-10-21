@@ -2,14 +2,16 @@ function copyTable(source: HTMLTableElement, kind: string): HTMLTableElement {
   const table = source.cloneNode(true) as HTMLTableElement;
   table.className = `print-table print-${kind}`;
   table.removeAttribute("style");
-  table.querySelectorAll(".vendor-table-actions, dialog").forEach(element => element.remove());
+  table.querySelectorAll(".vendor-table-actions, .cell-formula-preview, dialog").forEach(element => element.remove());
   table.querySelectorAll("input, select").forEach(element => element.remove());
   table.querySelectorAll("button").forEach(button => button.replaceWith(document.createTextNode(button.textContent ?? "")));
   table.querySelectorAll("[style], [tabindex], [title], [data-cell-id], [data-cell-code]").forEach(element => {
     for (const attribute of ["style", "tabindex", "title", "data-cell-id", "data-cell-code"]) element.removeAttribute(attribute);
   });
   table.querySelectorAll(".vendor-unselected, .cell-selected").forEach(element => element.classList.remove("vendor-unselected", "cell-selected"));
-  table.querySelectorAll(".cell-reference-1, .cell-reference-2, .cell-reference-3").forEach(element => element.classList.remove("cell-reference-1", "cell-reference-2", "cell-reference-3"));
+  table.querySelectorAll('[class*="cell-reference-"]').forEach(element => {
+    element.classList.remove(...Array.from(element.classList).filter(name => name.startsWith("cell-reference-")));
+  });
   return table;
 }
 

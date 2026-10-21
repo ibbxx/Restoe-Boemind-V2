@@ -15,6 +15,7 @@ import { ANALYSIS_STATUSES } from "../domain/analysis-status.ts";
 import type { AnalysisStatus } from "../domain/analysis-status.ts";
 
 type Tx = postgres.TransactionSql;
+const SHARED_WORKSPACE_OWNER_ID = "00000000-0000-4000-8000-000000000001" as StableId<"user">;
 type CurrentRow = { data: unknown; version: string; analysis_name: string; project_name: string;
   saved_at: Date; saved_by: string; mutation_id: string; request_signature: string; project_id: string };
 export class AccessDeniedError extends Error {
@@ -44,7 +45,7 @@ export class PostgresWorkbookRepository {
     const current = decodeWorkbook(row.data, { analysisId, projectId: row.project_id, analysisName: row.analysis_name, projectName: row.project_name });
     const workbook = captureSavedWorkbook({ ...current,
       version: parseStableId<"version">(row.version), savedAt: new Date(row.saved_at).toISOString(), savedBy: parseStableId<"user">(row.saved_by) });
-    requireCondition(workbook.snapshot.analysisId === analysisId && workbook.snapshot.projectId === row.project_id && workbook.savedBy === this.actorId, "Invalid workbook ownership.");
+    requireCondition(workbook.snapshot.analysisId === analysisId && workbook.snapshot.projectId === row.project_id, "Invalid stored workbook.");
     return { workbook, mutationId: parseStableId<"mutation">(row.mutation_id), signature: row.request_signature };
   }
 
@@ -69,7 +70,7 @@ export class PostgresWorkbookRepository {
           from procurement.analyses a
           join procurement.current_workbooks c on c.analysis_id = a.id and c.owner_id = a.owner_id
           join procurement.projects p on p.id = a.project_id and p.owner_id = a.owner_id
-          where a.project_id = ${id} and a.owner_id = ${this.actorId}
+          where a.project_id = ${id}
         ), filtered as materialized (
           select * from scoped where position(lower(${q.query}) in lower(name)) > 0
             and (${q.status} = '' or status = ${q.status})
@@ -119,7 +120,7 @@ export class PostgresWorkbookRepository {
       const version = createStableId<"version">();
       const [updated] = await tx<{ id: string; name: string; status: AnalysisStatus }[]>`
         update procurement.analyses set name = ${name.trim()}, status = ${status}
-        where id = ${analysisId} and owner_id = ${actor} returning id, name, status`;
+        where id = ${analysisId} returning id, name, status`;
       if (!updated) throw new AccessDeniedError();
       await tx`update procurement.current_workbooks set version = ${version}, mutation_id = ${mutationId}, request_signature = ${signature}
         where analysis_id = ${analysisId}`;
@@ -133,8 +134,8 @@ export class PostgresWorkbookRepository {
     if (actor !== this.actorId) throw new AccessDeniedError();
     return this.transaction(async tx => {
       await tx`select pg_advisory_xact_lock(hashtextextended(${'analysis:' + analysisId}, 0))`;
-      await tx`delete from procurement.current_workbooks where analysis_id = ${analysisId} and owner_id = ${actor}`;
-      const [deleted] = await tx<{ id: string }[]>`delete from procurement.analyses where id = ${analysisId} and owner_id = ${actor} returning id`;
+      await tx`delete from procurement.current_workbooks where analysis_id = ${analysisId}`;
+      const [deleted] = await tx<{ id: string }[]>`delete from procurement.analyses where id = ${analysisId} returning id`;
       if (!deleted) throw new AccessDeniedError();
       return { deleted: true as const, analysisId: deleted.id };
     });
@@ -146,9 +147,9 @@ export class PostgresWorkbookRepository {
     if (actor !== this.actorId) throw new AccessDeniedError();
     return this.transaction(async tx => {
       await tx`select pg_advisory_xact_lock(hashtextextended(${'project:' + projectId}, 0))`;
-      await tx`delete from procurement.current_workbooks where project_id = ${projectId} and owner_id = ${actor}`;
-      await tx`delete from procurement.analyses where project_id = ${projectId} and owner_id = ${actor}`;
-      const [deleted] = await tx<{ id: string }[]>`delete from procurement.projects where id = ${projectId} and owner_id = ${actor} returning id`;
+      await tx`delete from procurement.current_workbooks where project_id = ${projectId}`;
+      await tx`delete from procurement.analyses where project_id = ${projectId}`;
+      const [deleted] = await tx<{ id: string }[]>`delete from procurement.projects where id = ${projectId} returning id`;
       if (!deleted) throw new AccessDeniedError();
       return { deleted: true as const, projectId: deleted.id };
     });
@@ -173,12 +174,12 @@ export class PostgresWorkbookRepository {
           return next.outcome;
         }
         if (!prior) {
-          await tx`insert into procurement.projects (id, owner_id, name) values (${s.projectId}, ${actor}, ${s.project.name}) on conflict (id) do nothing`;
+          await tx`insert into procurement.projects (id, owner_id, name) values (${s.projectId}, ${SHARED_WORKSPACE_OWNER_ID}, ${s.project.name}) on conflict (id) do nothing`;
           const [project] = await tx`select id, name from procurement.projects where id = ${s.projectId}`;
           if (!project) throw new AccessDeniedError();
           requireCondition(project.name === s.project.name, "Project name differs from its stored metadata.");
           await tx`insert into procurement.analyses (id, project_id, owner_id, name)
-            values (${s.analysisId}, ${s.projectId}, ${actor}, ${s.analysis.analysis.name}) on conflict (id) do nothing`;
+            values (${s.analysisId}, ${s.projectId}, ${SHARED_WORKSPACE_OWNER_ID}, ${s.analysis.analysis.name}) on conflict (id) do nothing`;
           const [analysis] = await tx`select project_id from procurement.analyses where id = ${s.analysisId}`;
           if (!analysis) throw new AccessDeniedError();
           requireCondition(analysis.project_id === s.projectId, "An analysis cannot move to another project.");
@@ -187,7 +188,7 @@ export class PostgresWorkbookRepository {
         const data = tx.json(JSON.parse(canonicalJson(encodeWorkbook(w.snapshot, w.configuration))));
         await tx`insert into procurement.current_workbooks
           (analysis_id, project_id, owner_id, data, version, saved_at, saved_by, mutation_id, request_signature)
-          values (${s.analysisId}, ${s.projectId}, ${actor}, ${data}, ${w.version}, ${w.savedAt}, ${actor}, ${request.mutationId}, ${signature})
+          values (${s.analysisId}, ${s.projectId}, ${SHARED_WORKSPACE_OWNER_ID}, ${data}, ${w.version}, ${w.savedAt}, ${actor}, ${request.mutationId}, ${signature})
           on conflict (analysis_id) do update set data = excluded.data,
             version = excluded.version, saved_at = excluded.saved_at, saved_by = excluded.saved_by,
             mutation_id = excluded.mutation_id, request_signature = excluded.request_signature`;

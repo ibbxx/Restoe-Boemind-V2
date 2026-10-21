@@ -32,6 +32,7 @@ import { AuthenticationError } from "../src/server/supabase-auth.ts";
 const migrations = new URL("../supabase/migrations/", import.meta.url);
 const migrationFiles = readdirSync(migrations).filter(f => f.endsWith(".sql")).sort();
 const currentOnlyMigration = migrationFiles.find(file => file.includes("20261019071911_current_only_procurement"))!;
+const sharedWorkspaceMigration = migrationFiles.find(file => file.includes("20261021073232_shared_workspace_data"))!;
 const deleteAnalysisMigration = migrationFiles.find(file => file.includes("202610200001_allow_analysis_delete"))!;
 const deleteProjectMigration = migrationFiles.find(file => file.includes("20261020042433_allow_project_delete"))!;
 const listMetadataMigration = migrationFiles.find(file => file.includes("workbook_list_metadata"))!;
@@ -76,7 +77,7 @@ test("current-only migration, repeated Save, isolation and AHS round trips", asy
     admin = postgres({ host: "127.0.0.1", port, user: "postgres", database: "postgres", max: 1, onnotice: () => {} });
     await admin.unsafe(`create role anon; create role authenticated; create schema auth;
       create function auth.uid() returns uuid language sql stable as 'select nullif(current_setting(''request.jwt.claim.sub'',true),'''')::uuid';`);
-    for (const file of migrationFiles.filter(file => file !== currentOnlyMigration && file !== deleteAnalysisMigration && file !== deleteProjectMigration && file !== listMetadataMigration)) {
+    for (const file of migrationFiles.filter(file => file !== currentOnlyMigration && file !== sharedWorkspaceMigration && file !== deleteAnalysisMigration && file !== deleteProjectMigration && file !== listMetadataMigration)) {
       await admin.begin(tx => tx.unsafe(readFileSync(new URL(file, migrations), "utf8")));
     }
 
@@ -145,6 +146,7 @@ test("current-only migration, repeated Save, isolation and AHS round trips", asy
     const beforeProjection = await admin`select analysis_id, data::text as data, version, saved_at, mutation_id, request_signature from procurement.current_workbooks order by analysis_id`;
     await admin!.begin(tx => tx.unsafe(readFileSync(new URL(listMetadataMigration, migrations), "utf8")));
     assert.deepEqual(await admin`select analysis_id, data::text as data, version, saved_at, mutation_id, request_signature from procurement.current_workbooks order by analysis_id`, beforeProjection);
+    await admin!.begin(tx => tx.unsafe(readFileSync(new URL(sharedWorkspaceMigration, migrations), "utf8")));
     await admin.unsafe("create role procurement_app_test login noinherit; grant procurement_runtime to procurement_app_test;");
     login = postgres({ host: "127.0.0.1", port, user: "procurement_app_test", database: "postgres", max: 2, onnotice: () => {}, debug: (_connection, query) => { statements.push(query); } });
     const repo = new PostgresWorkbookRepository(login, actor);
@@ -368,8 +370,6 @@ test("current-only migration, repeated Save, isolation and AHS round trips", asy
       const s = currentSnapshot(prepareVendorColumns(createProcurementWorkbook("Delete race", "Race")));
       const first = await repo.save({ snapshot: s, configuration: s.workbook!.configuration, expectedVersion: null, mutationId: id<"mutation">() }, actor);
       assert(first.status === "SAVED");
-      await assert.rejects(repoOther.deleteProject(s.projectId, other));
-      await assert.rejects(repoOther.deleteAnalysis(s.analysisId, other));
       const [saved, deleted] = await Promise.all([
         repo.save({ snapshot: s, configuration: first.workbook.configuration, expectedVersion: first.workbook.version, mutationId: id<"mutation">() }, actor),
         repo.deleteProject(s.projectId, actor),
@@ -397,11 +397,12 @@ test("current-only migration, repeated Save, isolation and AHS round trips", asy
       const vendorName = full.results.find(r => r.cellId === vendorNameCell);
       assert(vendorName?.status === "TEXT"); assert.equal(vendorName.text, "Vendor formula");
     });
-    await t.test("RLS hides other users and rejects writes; bad input does not alter saved data", async () => {
-      assert.equal(await repoOther.current(dynamic.analysisId), null);
-      assert.deepEqual(await repoOther.listProjects(), []);
+    await t.test("shared workspace is visible to other users; bad input does not alter saved data", async () => {
+      assert(await repoOther.current(dynamic.analysisId));
+      assert((await repoOther.listProjects()).some(project => project.id === dynamic.projectId));
       const before = await repo.current(dynamic.analysisId); assert(before);
-      await assert.rejects(repoOther.save({ snapshot: before.snapshot, configuration: before.configuration, expectedVersion: null, mutationId: id<"mutation">() }, other));
+      const sharedSave = await repoOther.save({ snapshot: before.snapshot, configuration: before.configuration, expectedVersion: null, mutationId: id<"mutation">() }, other);
+      assert.equal(sharedSave.status, "CONFLICT");
       const bad = await repo.save({ snapshot: { ...before.snapshot, selectedOfferId: id<"offer">() }, configuration: before.configuration, expectedVersion: before.version, mutationId: id<"mutation">() }, actor);
       assert.equal(bad.status, "REJECTED"); assert.deepEqual(await repo.current(dynamic.analysisId), before);
     });
