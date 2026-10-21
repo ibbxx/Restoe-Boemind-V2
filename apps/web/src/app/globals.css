@@ -144,6 +144,15 @@ summary { cursor: pointer; padding: .7rem 0; }
 .expanding-search-field input:focus-visible { text-decoration: underline; text-underline-offset: 4px; }
 .project-result-count { order: 1; flex: 1; text-align: center; color: #64748b; font-size: 11px; }
 .project-analysis-list { width: 100%; box-sizing: border-box; border: 1px solid #e2e8f0; border-radius: 6px; background: #fff; }
+.analysis-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border-top: 1px solid #e2e8f0; background: #f8fafc; }
+.analysis-pagination-label { color: #64748b; font-size: 11px; }
+.analysis-pagination-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.analysis-pagination button { min-height: 34px; padding: 7px 11px; border-radius: 5px; font-size: 12px; font-weight: 700; }
+.analysis-pagination-primary { border-color: #0f172a; background: #0f172a; color: #fff; }
+.analysis-pagination-primary:hover:enabled { border-color: #1e293b; background: #1e293b; }
+.analysis-pagination-secondary { border-color: #cbd5e1; background: #fff; color: #334155; }
+.analysis-pagination-secondary:hover:enabled { border-color: #94a3b8; background: #f1f5f9; }
+.analysis-pagination button:disabled { cursor: not-allowed; opacity: .45; }
 .project-list { margin: 0; padding: 0; list-style: none; }
 .project-row { border-bottom: 1px solid #cbd5e1; }
 .project-row-header { display: flex; align-items: center; gap: 10px; }

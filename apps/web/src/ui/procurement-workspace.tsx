@@ -552,6 +552,14 @@ export function ProcurementWorkspace() {
               <button type="button" className="analysis-delete" aria-label={`Hapus ${analysis.name}`} title="Hapus" disabled={busy} onClick={() => removeAnalysis(selectedProject.id, analysis)}><Trash2 aria-hidden="true" /></button>
             </span>
           </div>) : <div className="project-empty"><p>{hasFilters ? "Tidak ada analisis yang sesuai filter." : "Belum ada analisis pada halaman ini."}</p></div>}
+          {analysisPage.total > 25 && <nav className="analysis-pagination" aria-label="Halaman analisis">
+            <span className="analysis-pagination-label">Menampilkan {visibleAnalyses.length} dari {analysisPage.total}</span>
+            <div className="analysis-pagination-actions">
+              <button type="button" className="analysis-pagination-secondary" disabled={busy || !analysisPage.previousCursor} onClick={() => navigate({ ...locationRef.current, after: "", before: analysisPage.previousCursor! })}>Sebelumnya</button>
+              <button type="button" className="analysis-pagination-primary" disabled={busy || !analysisPage.nextCursor} onClick={() => navigate({ ...locationRef.current, before: "", after: analysisPage.nextCursor! })}>Berikutnya</button>
+              {!analyses.length && (location.after || location.before) && <button type="button" className="analysis-pagination-secondary" disabled={busy} onClick={() => navigate({ ...locationRef.current, after: "", before: "" })}>Halaman pertama</button>}
+            </div>
+          </nav>}
         </div> : <div className="project-empty"><p>Proyek tidak ditemukan atau tidak dapat diakses.</p><button type="button" disabled={busy} onClick={showProjectList}>Kembali ke daftar proyek</button></div>
         : visibleProjects.length ? <ol className="project-list">
           {visibleProjects.map((project, index) => {
