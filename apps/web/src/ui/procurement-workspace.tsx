@@ -15,7 +15,7 @@ import type { AnalysisListItem, AnalysisPage, AnalysisMetadata, SaveRequest, Sav
 import { FormulaEngine } from "../engine/formula-engine.ts";
 import type { EngineConfiguration, EngineRun } from "../engine/contracts.ts";
 import { api, ApiError, invalidateSessionRequests, readSession, saveRequestBody } from "./workbook-client.ts";
-import { afterWorkbookPaint, measureWorkbookTask, recordWorkbookTiming } from "./workbook-performance.ts";
+import { measureWorkbookTask, recordWorkbookTiming } from "./workbook-performance.ts";
 import { WorksheetSurface } from "./worksheet-surface.tsx";
 import { LoadingIndicator } from "./loading-indicator.tsx";
 import { ConfirmationDialog } from "./confirmation-dialog.tsx";
@@ -31,7 +31,7 @@ import { prepareCalculationPolicy } from "../domain/calculation-policy.ts";
 import { prepareAhsRollups } from "../domain/ahs-groups.ts";
 import { ANALYSIS_STATUSES, analysisStatusLabel } from "../domain/analysis-status.ts";
 import type { AnalysisStatus } from "../domain/analysis-status.ts";
-import { analysisListUrl, loadWorkspaceLocation, matchesName, projectLocationUrl, readProjectLocation } from "./project-navigation.ts";
+import { analysisListUrl, matchesName, projectLocationUrl, readProjectLocation } from "./project-navigation.ts";
 import type { ProjectLocation } from "./project-navigation.ts";
 
 type ProjectListItem = { id: string; name: string };
@@ -50,7 +50,6 @@ export function ProcurementWorkspace() {
   const [location, setLocation] = useState(() => readProjectLocation(""));
   const locationRef = useRef(location);
   const projectsRef = useRef<ProjectListItem[]>([]);
-  const projectsFlight = useRef<Promise<void> | null>(null);
   const historyIndex = useRef(0);
   const restoringHistory = useRef<(() => void) | null>(null);
   const acceptHistory = useRef(false);
@@ -161,12 +160,8 @@ export function ProcurementWorkspace() {
   }, [snapshot]);
   const refreshProjects = useCallback(async () => {
     const actorId = lastActor.current;
-    const flight = api<ProjectListItem[]>("/api/workbook?view=projects").then(next => {
-      if (projectsFlight.current === flight && lastActor.current === actorId) { projectsRef.current = next; setProjects(next); }
-    });
-    projectsFlight.current = flight;
-    try { await flight; }
-    finally { if (projectsFlight.current === flight) projectsFlight.current = null; }
+    const next = await api<ProjectListItem[]>("/api/workbook?view=projects");
+    if (lastActor.current === actorId) { projectsRef.current = next; setProjects(next); }
   }, []);
 
   const restoreLocation = useCallback(async (next: ProjectLocation) => {
@@ -181,8 +176,6 @@ export function ProcurementWorkspace() {
     }
     const epoch = ++workspaceEpoch.current, actorId = lastActor.current;
     clearWorksheet(); setAnalyses([]);
-    await projectsFlight.current;
-    if (workspaceEpoch.current !== epoch || lastActor.current !== actorId) return;
     if (!next.projectId) { setMessage("Daftar proyek."); return; }
     const projectId = parseStableId<"project">(next.projectId);
     if (!projectsRef.current.some(project => project.id === projectId)) throw new Error("Proyek tidak ditemukan atau tidak dapat diakses.");
@@ -238,8 +231,12 @@ export function ProcurementWorkspace() {
     const epoch = workspaceEpoch.current, actorId = lastActor.current;
     const expectedVersion = snapshotRef.current?.analysisId === analysis.id ? savedVersion.current : analysis.version;
     if (!expectedVersion) return;
-    const updated = await api<AnalysisMetadata>("/api/workbook", { method: "POST", body: JSON.stringify({ operation: "UPDATE_ANALYSIS",
-      analysisId: analysis.id, name, status, expectedVersion, mutationId: id<"mutation">() }) });
+    const updated = await api<AnalysisMetadata>("/api/workbook", {
+      method: "POST", body: JSON.stringify({
+        operation: "UPDATE_ANALYSIS",
+        analysisId: analysis.id, name, status, expectedVersion, mutationId: id<"mutation">()
+      })
+    });
     if (workspaceEpoch.current !== epoch || lastActor.current !== actorId) return;
     setAnalyses(current => current.map(item => item.id === analysis.id ? { ...item, ...updated } : item));
     if (snapshotRef.current?.analysisId === analysis.id) {
@@ -306,16 +303,18 @@ export function ProcurementWorkspace() {
   }
   function returnToProject() {
     const projectId = snapshotRef.current?.projectId;
-    navigate({ ...locationRef.current, projectId: projectId ?? null, analysisId: null });
+    navigate({ ...locationRef.current, projectId: projectId && projectsRef.current.some(project => project.id === projectId) ? projectId : null, analysisId: null });
   }
   function logout(discardDraft = false) {
     if (dirty && !discardDraft) {
       setConfirmation({ eyebrow: "Peringatan keras", title: "Perubahan belum disimpan", description: "Jika Anda keluar sekarang, semua perubahan sejak penyimpanan terakhir akan hilang permanen. Simpan data terlebih dahulu atau pilih keluar dan buang perubahan.", cancelLabel: "Tetap di halaman", confirmLabel: "Keluar dan buang perubahan", onConfirm: () => logout(true) });
       return;
     }
-    void task(async () => { invalidateSessionRequests(); workspaceEpoch.current++; await api("/api/session", { method: "DELETE" }, false); setActor(null); clearWorksheet(); setProjects([]); projectsRef.current = []; setAnalyses([]);
+    void task(async () => {
+      invalidateSessionRequests(); workspaceEpoch.current++; await api("/api/session", { method: "DELETE" }, false); setActor(null); clearWorksheet(); setProjects([]); projectsRef.current = []; setAnalyses([]);
       sessionChannel.current?.postMessage({ actorId: null }); lastActor.current = null; workspaceEpoch.current++;
-      writeLocation(readProjectLocation(""), "replace"); setMessage("Berhasil keluar."); });
+      writeLocation(readProjectLocation(""), "replace"); setMessage("Berhasil keluar.");
+    });
   }
   const task = useCallback(async (action: () => void | Promise<void>, isSave = false) => {
     const sequence = ++taskSequence.current;
@@ -333,11 +332,6 @@ export function ProcurementWorkspace() {
   useEffect(() => {
     let active = true, epoch = workspaceEpoch.current;
     const current = () => active && workspaceEpoch.current === epoch;
-    const fail = (cause: unknown) => {
-      if (!current() || (cause instanceof ApiError && cause.code === "SESSION_CHANGED")) return;
-      if (cause instanceof ApiError && cause.code === "UNAUTHENTICATED") { requireLogin("Silakan masuk kembali."); return; }
-      setMessage(""); setError(cause instanceof Error ? cause.message : "Sesi gagal dimuat.");
-    };
     historyIndex.current = window.history.state?.procurementIndex ?? 0;
     window.history.replaceState({ ...window.history.state, procurementIndex: historyIndex.current }, "", window.location.href);
     void (async () => {
@@ -345,16 +339,20 @@ export function ProcurementWorkspace() {
         const session = await readSession();
         if (!current()) return;
         if (!session.actorId) { requireLogin("Silakan masuk."); return; }
-        lastActor.current = session.actorId; setActor(session.actorId);
-        await loadWorkspaceLocation(readProjectLocation(window.location.search), refreshProjects, async next => {
-          if (!current()) return;
-          const loading = restoreLocation(next);
-          epoch = workspaceEpoch.current;
-          await loading;
-        }, fail);
+        lastActor.current = session.actorId; setActor(session.actorId); await refreshProjects();
+        if (!current()) return;
+        const loading = restoreLocation(readProjectLocation(window.location.search));
+        epoch = workspaceEpoch.current;
+        await loading;
         if (current()) setMessage("Siap.");
-      } catch (cause) { fail(cause); }
-      finally { if (current()) setBusy(false); }
+      } catch (cause) {
+        if (current()) {
+          if (cause instanceof ApiError && cause.code === "SESSION_CHANGED") return;
+          if (cause instanceof ApiError && cause.code === "UNAUTHENTICATED") { requireLogin("Silakan masuk kembali."); return; }
+          setMessage("");
+          setError(cause instanceof Error ? cause.message : "Sesi gagal dimuat.");
+        }
+      } finally { if (current()) setBusy(false); }
     })();
     return () => { active = false; };
   }, [restoreLocation, refreshProjects, requireLogin]);
@@ -409,7 +407,7 @@ export function ProcurementWorkspace() {
   useEffect(() => {
     if (!snapshot || !configuration) return;
     let active = true;
-    const cancel = afterWorkbookPaint(() => {
+    const timer = window.setTimeout(() => {
       try {
         const run = measureWorkbookTask("calculation", () => {
           const engine = new FormulaEngine(configuration);
@@ -422,16 +420,15 @@ export function ProcurementWorkspace() {
       } catch (cause) {
         if (active) setCalculatedPreview({ snapshotId: snapshot.id, run: null, error: cause instanceof Error ? cause.message : "Konfigurasi tidak valid." });
       }
-    });
-    return () => { active = false; cancel(); };
+    }, 0);
+    return () => { active = false; window.clearTimeout(timer); };
   }, [snapshot, configuration]);
   const preview = calculatedPreview?.snapshotId === snapshot?.id ? calculatedPreview : null;
-  const calculating = !!snapshot && !!configuration && !preview;
   function save(): Promise<void> {
     if (saveFlight.current) return saveFlight.current;
     const flight = performSave();
     saveFlight.current = flight;
-    void flight.finally(() => { if (saveFlight.current === flight) saveFlight.current = null; }).catch(() => {});
+    void flight.finally(() => { if (saveFlight.current === flight) saveFlight.current = null; }).catch(() => { });
     return flight;
   }
   async function performSave() {
@@ -457,7 +454,8 @@ export function ProcurementWorkspace() {
       if (!current) return;
       const request: SaveRequest = pendingSave.current ?? {
         expectedVersion: savedVersion.current, mutationId: id<"mutation">(), snapshot: current,
-        configuration: current.workbook?.configuration ?? configurationRef.current };
+        configuration: current.workbook?.configuration ?? configurationRef.current
+      };
       pendingSave.current = request;
       const epoch = workspaceEpoch.current, actorId = lastActor.current;
       const body = measureWorkbookTask("save-serialize", () => saveRequestBody(request));
@@ -512,10 +510,11 @@ export function ProcurementWorkspace() {
         <button type="button" aria-label="Keluar" title="Keluar" disabled={busy} onClick={() => logout()}><LogOut aria-hidden="true" /></button>
       </nav>}
     </header>
-    <div className="operation-status" role="status" aria-label="Status operasi" aria-live="polite">{busy || preparingPrint ? loadingLabel : calculating ? "Menghitung… Hasil terbaru belum tersedia." : message}</div>
+    <div className="operation-status" role="status" aria-label="Status operasi" aria-live="polite">{busy || preparingPrint ? loadingLabel : message}</div>
     <LoadingIndicator active={busy || preparingPrint} label={loadingLabel} />
     {actor && (error || (snapshot && volumeError) || preview?.error) && <p role="alert">{error || volumeError || `Perhitungan gagal: ${preview?.error}`}</p>}
-    {!actor ? <SignIn busy={busy} error={error} onSubmit={event => { const form = submit(event); const element = event.currentTarget;
+    {!actor ? <SignIn busy={busy} error={error} onSubmit={event => {
+      const form = submit(event); const element = event.currentTarget;
       const password = element.elements.namedItem("password"); if (password instanceof HTMLInputElement) password.value = "";
       void task(async () => {
         invalidateSessionRequests(); workspaceEpoch.current++;
@@ -527,206 +526,211 @@ export function ProcurementWorkspace() {
         }
         lastActor.current = session.actorId; setActor(session.actorId); sessionChannel.current?.postMessage({ actorId: session.actorId });
         element.reset(); await refreshProjects(); setMessage("Berhasil masuk.");
-      }); }} />
-    : <>
-      {!snapshot ? <section className="project-index" aria-labelledby="project-index-title" aria-busy={busy}>
-        <header className="project-index-heading">
-          <div>
-            {location.projectId && <button type="button" className="project-back" disabled={busy} onClick={showProjectList}><ArrowLeft aria-hidden="true" /> Semua proyek</button>}
-            <p className="eyebrow">{location.projectId ? "DAFTAR ANALISIS" : "DAFTAR PEKERJAAN"}</p>
-            <h2 id="project-index-title">{location.projectId ? selectedProject?.name ?? (busy ? "Memuat proyek…" : "Proyek tidak tersedia") : "Proyek berjalan"}</h2>
-            <p>{location.projectId ? "Pilih analisis untuk membuka lembar perhitungan." : "Pilih proyek untuk melihat daftar analisis."}</p>
-          </div>
-          {(!location.projectId || selectedProject) && <button type="button" disabled={busy} onClick={() => showAnalysisForm(selectedProject?.id ?? "")}>{selectedProject ? "＋ Tambah analisis" : "＋ Proyek baru"}</button>}
-        </header>
-        {(!location.projectId || selectedProject) && <div className="project-filters" role="search" aria-label={location.projectId ? "Filter analisis" : "Cari proyek"}>
-          <ExpandingSearchDock key={location.projectId ?? "projects"} label={location.projectId ? "Cari analisis" : "Cari proyek"} placeholder={location.projectId ? "Cari analisis…" : "Cari proyek…"} value={location.projectId ? location.analysisQuery : location.projectQuery} disabled={busy} onSearch={query => updateFilters(location.projectId ? { analysisQuery: query } : { projectQuery: query })} />
-          {location.projectId && <>
-            <select aria-label="Filter status analisis" value={location.status} disabled={busy} onChange={event => updateFilters({ status: event.target.value as AnalysisStatus | "" })}><option value="">Semua status</option>{ANALYSIS_STATUSES.map(status => <option key={status} value={status}>{analysisStatusLabel[status]}</option>)}</select>
-            <select aria-label="Filter periode analisis" value={location.period} disabled={busy} onChange={event => updateFilters({ period: event.target.value })}><option value="">Semua periode</option>{periods.map(period => <option key={period} value={period}>{period}</option>)}<option value="NONE">Tanpa periode</option></select>
-          </>}
-          {hasFilters && <button type="button" disabled={busy} onClick={() => updateFilters(location.projectId ? { analysisQuery: "", status: "", period: "" } : { projectQuery: "" })}>Reset filter</button>}
-          <span className="project-result-count" aria-live="polite">{location.projectId ? `${visibleAnalyses.length} dari ${analysisPage.total} analisis` : `${visibleProjects.length} dari ${projects.length} proyek`}</span>
-        </div>}
-        {newWorkbookProjectId !== null && <form key={newWorkbookProjectId} id="project-create-form" className="project-create-form" onSubmit={event => {
-          const form = submit(event);
-          mutate(() => {
-            const existing = projects.find(p => p.id === newWorkbookProjectId);
-            if (newWorkbookProjectId && !existing) throw new Error("Proyek yang dipilih tidak ditemukan. Silakan pilih proyek kembali.");
-            const projectId = existing ? parseStableId<"project">(existing.id) : undefined;
-            const projectName = existing?.name ?? field(form, "projectName");
-            const next = createAnalysisWorkbook({ ...(projectId ? { projectId } : {}), projectName,
-              analysisName: field(form, "analysisName"), material: field(form, "material"), customer: field(form, "customer"), location: field(form, "location"),
-              analysisDate: field(form, "analysisDate"), marketing: field(form, "marketing"), payment: field(form, "payment"),
-              economicPrice: field(form, "economicPrice"), source: field(form, "source"), document: field(form, "document"),
-              volume: field(form, "volume"),
+      });
+    }} />
+      : <>
+        {!snapshot ? <section className="project-index" aria-labelledby="project-index-title">
+          <header className="project-index-heading">
+            <div>
+              {location.projectId && <button type="button" className="project-back" disabled={busy} onClick={showProjectList}><ArrowLeft aria-hidden="true" /> Semua proyek</button>}
+              <p className="eyebrow">{location.projectId ? "DAFTAR ANALISIS" : "DAFTAR PEKERJAAN"}</p>
+              <h2 id="project-index-title">{location.projectId ? selectedProject?.name ?? "Proyek tidak tersedia" : "Proyek berjalan"}</h2>
+              <p>{location.projectId ? "Pilih analisis untuk membuka lembar perhitungan." : "Pilih proyek untuk melihat daftar analisis."}</p>
+            </div>
+            {(!location.projectId || selectedProject) && <button type="button" disabled={busy} onClick={() => showAnalysisForm(selectedProject?.id ?? "")}>{selectedProject ? "＋ Tambah analisis" : "＋ Proyek baru"}</button>}
+          </header>
+          {(!location.projectId || selectedProject) && <div className="project-filters" role="search" aria-label={location.projectId ? "Filter analisis" : "Cari proyek"}>
+            <ExpandingSearchDock key={location.projectId ?? "projects"} label={location.projectId ? "Cari analisis" : "Cari proyek"} placeholder={location.projectId ? "Cari analisis…" : "Cari proyek…"} value={location.projectId ? location.analysisQuery : location.projectQuery} disabled={busy} onSearch={query => updateFilters(location.projectId ? { analysisQuery: query } : { projectQuery: query })} />
+            {location.projectId && <>
+              <select aria-label="Filter status analisis" value={location.status} disabled={busy} onChange={event => updateFilters({ status: event.target.value as AnalysisStatus | "" })}><option value="">Semua status</option>{ANALYSIS_STATUSES.map(status => <option key={status} value={status}>{analysisStatusLabel[status]}</option>)}</select>
+              <select aria-label="Filter periode analisis" value={location.period} disabled={busy} onChange={event => updateFilters({ period: event.target.value })}><option value="">Semua periode</option>{periods.map(period => <option key={period} value={period}>{period}</option>)}<option value="NONE">Tanpa periode</option></select>
+            </>}
+            {hasFilters && <button type="button" disabled={busy} onClick={() => updateFilters(location.projectId ? { analysisQuery: "", status: "", period: "" } : { projectQuery: "" })}>Reset filter</button>}
+            <span className="project-result-count" aria-live="polite">{location.projectId ? `${visibleAnalyses.length} dari ${analysisPage.total} analisis` : `${visibleProjects.length} dari ${projects.length} proyek`}</span>
+          </div>}
+          {newWorkbookProjectId !== null && <form key={newWorkbookProjectId} id="project-create-form" className="project-create-form" onSubmit={event => {
+            const form = submit(event);
+            mutate(() => {
+              const existing = projects.find(p => p.id === newWorkbookProjectId);
+              if (newWorkbookProjectId && !existing) throw new Error("Proyek yang dipilih tidak ditemukan. Silakan pilih proyek kembali.");
+              const projectId = existing ? parseStableId<"project">(existing.id) : undefined;
+              const projectName = existing?.name ?? field(form, "projectName");
+              const next = createAnalysisWorkbook({
+                ...(projectId ? { projectId } : {}), projectName,
+                analysisName: field(form, "analysisName"), material: field(form, "material"), customer: field(form, "customer"), location: field(form, "location"),
+                analysisDate: field(form, "analysisDate"), marketing: field(form, "marketing"), payment: field(form, "payment"),
+                economicPrice: field(form, "economicPrice"), source: field(form, "source"), document: field(form, "document"),
+                volume: field(form, "volume"),
+              });
+              edit(next, null);
+              savedVersion.current = null; setNewWorkbookProjectId(null);
+              writeLocation({ ...locationRef.current, projectId: existing?.id ?? null, analysisId: null });
             });
-            edit(next, null);
-            savedVersion.current = null; setNewWorkbookProjectId(null);
-            writeLocation({ ...locationRef.current, projectId: existing?.id ?? null, analysisId: null });
-          });
-        }}>
-          <CardHeader className="project-create-heading">
-            <div><p className="form-eyebrow">RUANG KERJA BARU</p><h3>{newWorkbookProjectId ? "Tambah analisis" : "Proyek baru"}</h3></div>
-            <button type="button" className="project-create-close" aria-label="Tutup form" disabled={busy} onClick={() => setNewWorkbookProjectId(null)}>×</button>
-          </CardHeader>
-          <CardDescription className="project-create-intro">Isi identitas analisis untuk menyiapkan header worksheet. Tanda * wajib diisi.</CardDescription>
-          {newWorkbookProjectId && <div className="form-project-context"><span>Proyek</span><strong>{projects.find(p => p.id === newWorkbookProjectId)?.name}</strong></div>}
-          <CardContent className="project-create-columns">
-            <fieldset className="project-create-fields" disabled={busy}>
-              <legend className="sr-only">Identitas analisis</legend>
-              <div className="project-create-section-heading" aria-hidden="true">Identitas analisis</div>
-              {!newWorkbookProjectId && <label className="project-create-wide"><span>Nama proyek *</span><input name="projectName" placeholder={selectedDocumentExample.project} required /></label>}
-              <label className="project-create-wide"><span>Nama analisis *</span><input name="analysisName" placeholder={selectedDocumentExample.analysis} required /></label>
-              <label><span>Tanggal analisis *</span><input name="analysisDate" type="date" value={newAnalysisDate} onChange={event => setNewAnalysisDate(event.target.value)} required /></label>
-              <label><span>Periode</span><input value={analysisPeriod(newAnalysisDate)} readOnly aria-describedby="analysis-period-help" />
-                <small id="analysis-period-help" className="field-help">P1: tanggal 1–14 · P2: tanggal 15–akhir bulan.</small></label>
-              <label className="project-create-wide"><span>Pekerjaan / Material *</span><input name="material" placeholder="HSD" required /></label>
-              <label><span>Customer *</span><input name="customer" placeholder="Nama customer" required /></label>
-              <label><span>Lokasi *</span><input name="location" placeholder="Lokasi pekerjaan" required /></label>
-            </fieldset>
-            <fieldset className="project-create-fields" disabled={busy}>
-              <legend className="sr-only">Informasi AHS</legend>
-              <div className="project-create-section-heading" aria-hidden="true">Informasi AHS</div>
-              <label className="project-create-wide"><span>Volume (L) *</span><input name="volume" type="text" inputMode="decimal" placeholder="50.000" required /></label>
-              <label><span>Marketing *</span><input name="marketing" placeholder="Nama marketing" required /></label>
-              <label><span>Pembayaran *</span><input name="payment" placeholder="30 hari" required /></label>
-              <label><span>Harga Keekonomian</span><input name="economicPrice" placeholder="Isi jika tersedia" /></label>
-              <label><span>Dokumen *</span><select name="document" value={newDocumentType} onChange={event => setNewDocumentType(event.target.value)} aria-label="Dokumen" required><option value="FULL DOC">Full Doc</option><option value="PPN">PPN</option><option value="NON PPN">Non PPN</option></select></label>
-            </fieldset>
-          </CardContent>
-          <CardFooter className="project-create-actions">
-            <button type="submit" className="project-create-secondary" value="empty" disabled={busy}>Buat workbook</button>
-            <button type="button" className="project-create-cancel" disabled={busy} onClick={() => setNewWorkbookProjectId(null)}>Batal</button>
-          </CardFooter>
-        </form>}
-        {location.projectId ? selectedProject ? <div className="project-analysis-list" aria-label={`Lembar perhitungan ${selectedProject.name}`}>
-          {visibleAnalyses.length ? visibleAnalyses.map(analysis => <div className="analysis-row" key={analysis.id}>
-            <span className="analysis-number" aria-label={`Nomor analisis ${analysis.number}`}>{String(analysis.number).padStart(2, "0")}</span>
-            <div className="analysis-summary">
-              <button type="button" className="analysis-name analysis-name-link" aria-label={`Masuk ke ${analysis.name}`} disabled={busy} onClick={() => openAnalysis(analysis.id)}>{analysis.name}</button>
-              <span className="analysis-meta"><span className="analysis-period" aria-label={`Periode ${analysis.period ?? "belum tersedia"}`}>{analysis.period ?? "Tanpa periode"}</span><span className={`analysis-status analysis-status-${analysis.status.toLowerCase()}`}>{analysisStatusLabel[analysis.status]}</span></span>
-            </div>
-            <span className="analysis-actions">
-              <button type="button" className="analysis-enter" aria-label={`Masuk ke ${analysis.name}`} title="Masuk" disabled={busy} onClick={() => openAnalysis(analysis.id)}><LogIn aria-hidden="true" /></button>
-              <button type="button" className="analysis-edit" aria-label={`Edit ${analysis.name}`} title="Edit analisis" disabled={busy} onClick={() => setAnalysisToEdit(analysis)}><Pencil aria-hidden="true" /></button>
-              <button type="button" className="analysis-delete" aria-label={`Hapus ${analysis.name}`} title="Hapus" disabled={busy} onClick={() => removeAnalysis(selectedProject.id, analysis)}><Trash2 aria-hidden="true" /></button>
-            </span>
-          </div>) : !busy && !error && <div className="project-empty"><p>{hasFilters ? "Tidak ada analisis yang sesuai filter." : "Belum ada analisis pada halaman ini."}</p></div>}
-          {analysisPage.total > 25 && <nav className="analysis-pagination" aria-label="Halaman analisis">
-            <span className="analysis-pagination-label">Menampilkan {visibleAnalyses.length} dari {analysisPage.total}</span>
-            <div className="analysis-pagination-actions">
-              <button type="button" className="analysis-pagination-secondary" disabled={busy || !analysisPage.previousCursor} onClick={() => navigate({ ...locationRef.current, after: "", before: analysisPage.previousCursor! })}>Sebelumnya</button>
-              <button type="button" className="analysis-pagination-primary" disabled={busy || !analysisPage.nextCursor} onClick={() => navigate({ ...locationRef.current, before: "", after: analysisPage.nextCursor! })}>Berikutnya</button>
-              {!analyses.length && (location.after || location.before) && <button type="button" className="analysis-pagination-secondary" disabled={busy} onClick={() => navigate({ ...locationRef.current, after: "", before: "" })}>Halaman pertama</button>}
-            </div>
-          </nav>}
-        </div> : !busy && !error && <div className="project-empty"><p>Proyek tidak ditemukan atau tidak dapat diakses.</p><button type="button" disabled={busy} onClick={showProjectList}>Kembali ke daftar proyek</button></div>
-        : visibleProjects.length ? <ol className="project-list">
-          {visibleProjects.map((project, index) => {
-            return <li key={project.id} className="project-row">
-              <div className="project-row-header">
-                <button type="button" className="project-row-button" disabled={busy}
-                  onClick={() => {
-                    if (suppressProjectClick.current) { suppressProjectClick.current = false; return; }
-                    showProject(project.id);
-                  }}
-                  onContextMenu={event => { event.preventDefault(); openProjectContextMenu(project, event.clientX, event.clientY); }}
-                  onPointerDown={event => handleProjectPointerDown(project, event)}
-                  onPointerUp={handleProjectPointerUp}
-                  onPointerCancel={handleProjectPointerUp}>
-                  <span className="project-number">{String(index + 1).padStart(2, "0")}</span>
-                  <span className="project-name">{project.name}</span>
-                  <span className="project-action" aria-hidden="true"><ChevronRight /></span>
-                </button>
+          }}>
+            <CardHeader className="project-create-heading">
+              <div><p className="form-eyebrow">RUANG KERJA BARU</p><h3>{newWorkbookProjectId ? "Tambah analisis" : "Proyek baru"}</h3></div>
+              <button type="button" className="project-create-close" aria-label="Tutup form" disabled={busy} onClick={() => setNewWorkbookProjectId(null)}>×</button>
+            </CardHeader>
+            <CardDescription className="project-create-intro">Isi identitas analisis untuk menyiapkan header worksheet. Tanda * wajib diisi.</CardDescription>
+            {newWorkbookProjectId && <div className="form-project-context"><span>Proyek</span><strong>{projects.find(p => p.id === newWorkbookProjectId)?.name}</strong></div>}
+            <CardContent className="project-create-columns">
+              <fieldset className="project-create-fields" disabled={busy}>
+                <legend className="sr-only">Identitas analisis</legend>
+                <div className="project-create-section-heading" aria-hidden="true">Identitas analisis</div>
+                {!newWorkbookProjectId && <label className="project-create-wide"><span>Nama proyek *</span><input name="projectName" placeholder={selectedDocumentExample.project} required /></label>}
+                <label className="project-create-wide"><span>Nama analisis *</span><input name="analysisName" placeholder={selectedDocumentExample.analysis} required /></label>
+                <label><span>Tanggal analisis *</span><input name="analysisDate" type="date" value={newAnalysisDate} onChange={event => setNewAnalysisDate(event.target.value)} required /></label>
+                <label><span>Periode</span><input value={analysisPeriod(newAnalysisDate)} readOnly aria-describedby="analysis-period-help" />
+                  <small id="analysis-period-help" className="field-help">P1: tanggal 1–14 · P2: tanggal 15–akhir bulan.</small></label>
+                <label className="project-create-wide"><span>Pekerjaan / Material *</span><input name="material" placeholder="HSD" required /></label>
+                <label><span>Customer *</span><input name="customer" placeholder="Nama customer" required /></label>
+                <label><span>Lokasi *</span><input name="location" placeholder="Lokasi pekerjaan" required /></label>
+              </fieldset>
+              <fieldset className="project-create-fields" disabled={busy}>
+                <legend className="sr-only">Informasi AHS</legend>
+                <div className="project-create-section-heading" aria-hidden="true">Informasi AHS</div>
+                <label className="project-create-wide"><span>Volume (L) *</span><input name="volume" type="text" inputMode="decimal" placeholder="50.000" required /></label>
+                <label><span>Marketing *</span><input name="marketing" placeholder="Nama marketing" required /></label>
+                <label><span>Pembayaran *</span><input name="payment" placeholder="30 hari" required /></label>
+                <label><span>Harga Keekonomian</span><input name="economicPrice" placeholder="Isi jika tersedia" /></label>
+                <label><span>Dokumen *</span><select name="document" value={newDocumentType} onChange={event => setNewDocumentType(event.target.value)} aria-label="Dokumen" required><option value="FULL DOC">Full Doc</option><option value="PPN">PPN</option><option value="NON PPN">Non PPN</option></select></label>
+              </fieldset>
+            </CardContent>
+            <CardFooter className="project-create-actions">
+              <button type="submit" className="project-create-secondary" value="empty" disabled={busy}>Buat workbook</button>
+              <button type="button" className="project-create-cancel" disabled={busy} onClick={() => setNewWorkbookProjectId(null)}>Batal</button>
+            </CardFooter>
+          </form>}
+          {location.projectId ? selectedProject ? <div className="project-analysis-list" aria-label={`Lembar perhitungan ${selectedProject.name}`}>
+            {visibleAnalyses.length ? visibleAnalyses.map(analysis => <div className="analysis-row" key={analysis.id}>
+              <span className="analysis-number" aria-label={`Nomor analisis ${analysis.number}`}>{String(analysis.number).padStart(2, "0")}</span>
+              <div className="analysis-summary">
+                <button type="button" className="analysis-name analysis-name-link" aria-label={`Masuk ke ${analysis.name}`} disabled={busy} onClick={() => openAnalysis(analysis.id)}>{analysis.name}</button>
+                <span className="analysis-meta"><span className="analysis-period" aria-label={`Periode ${analysis.period ?? "belum tersedia"}`}>{analysis.period ?? "Tanpa periode"}</span><span className={`analysis-status analysis-status-${analysis.status.toLowerCase()}`}>{analysisStatusLabel[analysis.status]}</span></span>
               </div>
-            </li>;
-          })}
-        </ol> : !busy && !error && <div className="project-empty"><p>{projects.length ? "Tidak ada proyek yang sesuai pencarian." : "Belum ada proyek tersimpan."}</p>{!projects.length && <button type="button" disabled={busy} onClick={() => showAnalysisForm("")}>Buat proyek pertama</button>}</div>}
-      </section> : <WorksheetSurface
-        snapshot={snapshot}
-        configuration={configuration}
-        run={preview?.run ?? null}
-        disabled={busy}
-        saving={saving}
-        calculating={calculating}
-        onPrintLoading={setPreparingPrint}
-        volumeError={volumeError}
-        actor={actor}
-        onChange={next => {
-          if (next.workbook) { edit(next); return; }
-          const remaining = new Set(next.worksheets.flatMap(w => w.tables.flatMap(t => t.cells.map(c => c.id))));
-          const units = configuration?.units.filter(u => remaining.has(u.cellId));
-          edit(next, configuration && units && units.length !== configuration.units.length ? { ...configuration, version: id<"policy">(), units } : configuration);
-        }}
-        onError={setError}
-        onEditing={() => { setDirty(true); pendingSave.current = null; }}
-        onSave={() => void task(() => save(), true)}
-        analysisStatus={analyses.find(analysis => analysis.id === snapshot.analysisId)?.status}
-        onAnalysisStatusChange={updateActiveAnalysisStatus}
-        onRequestConfirm={(title, description, onConfirm) => setConfirmation({ eyebrow: "Konfirmasi", title, description, onConfirm })}
-        onSelectOffer={(selectionId, vendorName) => { if (snapshot && actor) mutate(() => {
-          const next = selectSheetOffer(snapshot, parseStableId<"offer">(selectionId), actor);
-          const source = next.worksheets.find(w => w.stage === "AHS")?.tables.flatMap(t => t.cells.map(cell => ({ cell, label: t.rows.find(row => row.id === cell.rowId)?.label }))).find(field =>
-            field.cell.scope === next.activeProfile && field.label === "Sumber");
-          edit(source?.cell.source.kind === "INPUT" ? updateCellInput(next, source.cell.scope, source.cell.id, { kind: "TEXT", text: vendorName }) : next);
-        }); }}
-        onInput={(stage, label, value, kind, cell) => { if (snapshot) mutate(() => {
-          const input = value.trim() ? { kind, text: value } : { kind: "UNSET" as const };
-          if (cell) edit(updateCellInput(snapshot, cell.scope, cell.id, input));
-          else edit(appendField(snapshot, stage, kind === "TEXT" && stage === "EVALUASI_VENDOR" ? "SHARED" : snapshot.activeProfile, label, input).snapshot);
-        }); }}
-      />}
-      {snapshot && <div className="sheet-caption">{snapshot.analysis.analysis.name}{preview?.run?.provisional?.status === "ERROR" ? " · ERROR" : ""}</div>}
-      {analysisToDelete && <div className="analysis-delete-overlay" role="presentation" onClick={() => setAnalysisToDelete(null)}>
-        <section className="analysis-delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby="analysis-delete-title" aria-describedby="analysis-delete-description" onClick={event => event.stopPropagation()}>
-          <div className="analysis-delete-icon" aria-hidden="true"><AlertTriangle /></div>
-          <div className="analysis-delete-content">
-            <p className="analysis-delete-eyebrow">Hapus analisis</p>
-            <h2 id="analysis-delete-title">Hapus “{analysisToDelete.analysis.name}”?</h2>
-            <p id="analysis-delete-description">Seluruh data analisis dan workbook akan hilang permanen. Data yang sudah dihapus tidak dapat dipulihkan dan tindakan ini tidak bisa dibatalkan.</p>
-            <div className="analysis-delete-actions">
-              <button type="button" className="analysis-delete-cancel" onClick={() => setAnalysisToDelete(null)}>Batal</button>
-              <button type="button" className="analysis-delete-confirm" disabled={busy} onClick={confirmRemoveAnalysis}><Trash2 aria-hidden="true" /> Hapus permanen</button>
+              <span className="analysis-actions">
+                <button type="button" className="analysis-enter" aria-label={`Masuk ke ${analysis.name}`} title="Masuk" disabled={busy} onClick={() => openAnalysis(analysis.id)}><LogIn aria-hidden="true" /></button>
+                <button type="button" className="analysis-edit" aria-label={`Edit ${analysis.name}`} title="Edit analisis" disabled={busy} onClick={() => setAnalysisToEdit(analysis)}><Pencil aria-hidden="true" /></button>
+                <button type="button" className="analysis-delete" aria-label={`Hapus ${analysis.name}`} title="Hapus" disabled={busy} onClick={() => removeAnalysis(selectedProject.id, analysis)}><Trash2 aria-hidden="true" /></button>
+              </span>
+            </div>) : <div className="project-empty"><p>{hasFilters ? "Tidak ada analisis yang sesuai filter." : "Belum ada analisis pada halaman ini."}</p></div>}
+            {analysisPage.total > 25 && <nav className="analysis-pagination" aria-label="Halaman analisis">
+              <span className="analysis-pagination-label">Menampilkan {visibleAnalyses.length} dari {analysisPage.total}</span>
+              <div className="analysis-pagination-actions">
+                <button type="button" className="analysis-pagination-secondary" disabled={busy || !analysisPage.previousCursor} onClick={() => navigate({ ...locationRef.current, after: "", before: analysisPage.previousCursor! })}>Sebelumnya</button>
+                <button type="button" className="analysis-pagination-primary" disabled={busy || !analysisPage.nextCursor} onClick={() => navigate({ ...locationRef.current, before: "", after: analysisPage.nextCursor! })}>Berikutnya</button>
+                {!analyses.length && (location.after || location.before) && <button type="button" className="analysis-pagination-secondary" disabled={busy} onClick={() => navigate({ ...locationRef.current, after: "", before: "" })}>Halaman pertama</button>}
+              </div>
+            </nav>}
+          </div> : <div className="project-empty"><p>Proyek tidak ditemukan atau tidak dapat diakses.</p><button type="button" disabled={busy} onClick={showProjectList}>Kembali ke daftar proyek</button></div>
+            : visibleProjects.length ? <ol className="project-list">
+              {visibleProjects.map((project, index) => {
+                return <li key={project.id} className="project-row">
+                  <div className="project-row-header">
+                    <button type="button" className="project-row-button" disabled={busy}
+                      onClick={() => {
+                        if (suppressProjectClick.current) { suppressProjectClick.current = false; return; }
+                        showProject(project.id);
+                      }}
+                      onContextMenu={event => { event.preventDefault(); openProjectContextMenu(project, event.clientX, event.clientY); }}
+                      onPointerDown={event => handleProjectPointerDown(project, event)}
+                      onPointerUp={handleProjectPointerUp}
+                      onPointerCancel={handleProjectPointerUp}>
+                      <span className="project-number">{String(index + 1).padStart(2, "0")}</span>
+                      <span className="project-name">{project.name}</span>
+                      <span className="project-action" aria-hidden="true"><ChevronRight /></span>
+                    </button>
+                  </div>
+                </li>;
+              })}
+            </ol> : <div className="project-empty"><p>{projects.length ? "Tidak ada proyek yang sesuai pencarian." : "Belum ada proyek tersimpan."}</p>{!projects.length && <button type="button" disabled={busy} onClick={() => showAnalysisForm("")}>Buat proyek pertama</button>}</div>}
+        </section> : <WorksheetSurface
+          snapshot={snapshot}
+          configuration={configuration}
+          run={preview?.run ?? null}
+          disabled={busy}
+          saving={saving}
+          onPrintLoading={setPreparingPrint}
+          volumeError={volumeError}
+          actor={actor}
+          onChange={next => {
+            if (next.workbook) { edit(next); return; }
+            const remaining = new Set(next.worksheets.flatMap(w => w.tables.flatMap(t => t.cells.map(c => c.id))));
+            const units = configuration?.units.filter(u => remaining.has(u.cellId));
+            edit(next, configuration && units && units.length !== configuration.units.length ? { ...configuration, version: id<"policy">(), units } : configuration);
+          }}
+          onError={setError}
+          onEditing={() => { setDirty(true); pendingSave.current = null; }}
+          onSave={() => void task(() => save(), true)}
+          analysisStatus={analyses.find(analysis => analysis.id === snapshot.analysisId)?.status}
+          onAnalysisStatusChange={updateActiveAnalysisStatus}
+          onRequestConfirm={(title, description, onConfirm) => setConfirmation({ eyebrow: "Konfirmasi", title, description, onConfirm })}
+          onSelectOffer={(selectionId, vendorName) => {
+            if (snapshot && actor) mutate(() => {
+              const next = selectSheetOffer(snapshot, parseStableId<"offer">(selectionId), actor);
+              const source = next.worksheets.find(w => w.stage === "AHS")?.tables.flatMap(t => t.cells.map(cell => ({ cell, label: t.rows.find(row => row.id === cell.rowId)?.label }))).find(field =>
+                field.cell.scope === next.activeProfile && field.label === "Sumber");
+              edit(source?.cell.source.kind === "INPUT" ? updateCellInput(next, source.cell.scope, source.cell.id, { kind: "TEXT", text: vendorName }) : next);
+            });
+          }}
+          onInput={(stage, label, value, kind, cell) => {
+            if (snapshot) mutate(() => {
+              const input = value.trim() ? { kind, text: value } : { kind: "UNSET" as const };
+              if (cell) edit(updateCellInput(snapshot, cell.scope, cell.id, input));
+              else edit(appendField(snapshot, stage, kind === "TEXT" && stage === "EVALUASI_VENDOR" ? "SHARED" : snapshot.activeProfile, label, input).snapshot);
+            });
+          }}
+        />}
+        {snapshot && <div className="sheet-caption">{snapshot.analysis.analysis.name}{preview?.run?.provisional?.status === "ERROR" ? " · ERROR" : ""}</div>}
+        {analysisToDelete && <div className="analysis-delete-overlay" role="presentation" onClick={() => setAnalysisToDelete(null)}>
+          <section className="analysis-delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby="analysis-delete-title" aria-describedby="analysis-delete-description" onClick={event => event.stopPropagation()}>
+            <div className="analysis-delete-icon" aria-hidden="true"><AlertTriangle /></div>
+            <div className="analysis-delete-content">
+              <p className="analysis-delete-eyebrow">Hapus analisis</p>
+              <h2 id="analysis-delete-title">Hapus “{analysisToDelete.analysis.name}”?</h2>
+              <p id="analysis-delete-description">Seluruh data analisis dan workbook akan hilang permanen. Data yang sudah dihapus tidak dapat dipulihkan dan tindakan ini tidak bisa dibatalkan.</p>
+              <div className="analysis-delete-actions">
+                <button type="button" className="analysis-delete-cancel" onClick={() => setAnalysisToDelete(null)}>Batal</button>
+                <button type="button" className="analysis-delete-confirm" disabled={busy} onClick={confirmRemoveAnalysis}><Trash2 aria-hidden="true" /> Hapus permanen</button>
+              </div>
             </div>
-          </div>
-        </section>
-      </div>}
-      {projectToDelete && <div className="analysis-delete-overlay" role="presentation" onClick={() => setProjectToDelete(null)}>
-        <section className="analysis-delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby="project-delete-title" aria-describedby="project-delete-description" onClick={event => event.stopPropagation()}>
-          <div className="analysis-delete-icon" aria-hidden="true"><AlertTriangle /></div>
-          <div className="analysis-delete-content">
-            <p className="analysis-delete-eyebrow">Hapus proyek</p>
-            <h2 id="project-delete-title">Hapus “{projectToDelete.name}”?</h2>
-            <p id="project-delete-description">Proyek, seluruh analisis, dan semua workbook di dalamnya akan hilang permanen. Data tidak dapat dipulihkan dan tindakan ini tidak bisa dibatalkan.</p>
-            <div className="analysis-delete-actions">
-              <button type="button" className="analysis-delete-cancel" onClick={() => setProjectToDelete(null)}>Batal</button>
-              <button type="button" className="analysis-delete-confirm" disabled={busy} onClick={confirmRemoveProject}><Trash2 aria-hidden="true" /> Hapus permanen</button>
+          </section>
+        </div>}
+        {projectToDelete && <div className="analysis-delete-overlay" role="presentation" onClick={() => setProjectToDelete(null)}>
+          <section className="analysis-delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby="project-delete-title" aria-describedby="project-delete-description" onClick={event => event.stopPropagation()}>
+            <div className="analysis-delete-icon" aria-hidden="true"><AlertTriangle /></div>
+            <div className="analysis-delete-content">
+              <p className="analysis-delete-eyebrow">Hapus proyek</p>
+              <h2 id="project-delete-title">Hapus “{projectToDelete.name}”?</h2>
+              <p id="project-delete-description">Proyek, seluruh analisis, dan semua workbook di dalamnya akan hilang permanen. Data tidak dapat dipulihkan dan tindakan ini tidak bisa dibatalkan.</p>
+              <div className="analysis-delete-actions">
+                <button type="button" className="analysis-delete-cancel" onClick={() => setProjectToDelete(null)}>Batal</button>
+                <button type="button" className="analysis-delete-confirm" disabled={busy} onClick={confirmRemoveProject}><Trash2 aria-hidden="true" /> Hapus permanen</button>
+              </div>
             </div>
+          </section>
+        </div>}
+        {projectContextMenu && <div className="project-context-layer" role="presentation" onClick={() => setProjectContextMenu(null)} onContextMenu={event => event.preventDefault()}>
+          <div className="project-context-menu" role="menu" style={{ left: projectContextMenu.x, top: projectContextMenu.y }} onClick={event => event.stopPropagation()}>
+            <button type="button" role="menuitem" disabled={busy} onClick={() => { setProjectToDelete(projectContextMenu.project); setProjectContextMenu(null); }}>
+              <Trash2 aria-hidden="true" /> Hapus proyek
+            </button>
           </div>
-        </section>
-      </div>}
-      {projectContextMenu && <div className="project-context-layer" role="presentation" onClick={() => setProjectContextMenu(null)} onContextMenu={event => event.preventDefault()}>
-        <div className="project-context-menu" role="menu" style={{ left: projectContextMenu.x, top: projectContextMenu.y }} onClick={event => event.stopPropagation()}>
-          <button type="button" role="menuitem" disabled={busy} onClick={() => { setProjectToDelete(projectContextMenu.project); setProjectContextMenu(null); }}>
-            <Trash2 aria-hidden="true" /> Hapus proyek
-          </button>
-        </div>
-      </div>}
-      {analysisToEdit && <div className="analysis-delete-overlay" role="presentation" onClick={() => setAnalysisToEdit(null)}>
-        <section className="analysis-edit-dialog" role="dialog" aria-modal="true" aria-labelledby="analysis-edit-title" onClick={event => event.stopPropagation()}>
-          <div className="analysis-delete-content">
-            <p className="analysis-delete-eyebrow">Edit analisis</p>
-            <h2 id="analysis-edit-title">Pengaturan analisis</h2>
-            <form className="analysis-edit-form" onSubmit={updateAnalysisMetadata}>
-              <label><span>Nama analisis</span><input name="analysisName" defaultValue={analysisToEdit.name} required autoFocus /></label>
-              <label><span>Status</span><select name="analysisStatus" defaultValue={analysisToEdit.status}>{ANALYSIS_STATUSES.map(status => <option key={status} value={status}>{analysisStatusLabel[status]}</option>)}</select></label>
-              <div className="analysis-delete-actions"><button type="button" className="analysis-delete-cancel" onClick={() => setAnalysisToEdit(null)}>Batal</button><button type="submit" className="analysis-delete-confirm" disabled={busy}>Simpan</button></div>
-            </form>
-          </div>
-        </section>
-      </div>}
-      {confirmation && <ConfirmationDialog {...confirmation} onConfirm={() => { const action = confirmation.onConfirm; setConfirmation(null); action(); }} onCancel={() => setConfirmation(null)} />}
-    </>}
+        </div>}
+        {analysisToEdit && <div className="analysis-delete-overlay" role="presentation" onClick={() => setAnalysisToEdit(null)}>
+          <section className="analysis-edit-dialog" role="dialog" aria-modal="true" aria-labelledby="analysis-edit-title" onClick={event => event.stopPropagation()}>
+            <div className="analysis-delete-content">
+              <p className="analysis-delete-eyebrow">Edit analisis</p>
+              <h2 id="analysis-edit-title">Pengaturan analisis</h2>
+              <form className="analysis-edit-form" onSubmit={updateAnalysisMetadata}>
+                <label><span>Nama analisis</span><input name="analysisName" defaultValue={analysisToEdit.name} required autoFocus /></label>
+                <label><span>Status</span><select name="analysisStatus" defaultValue={analysisToEdit.status}>{ANALYSIS_STATUSES.map(status => <option key={status} value={status}>{analysisStatusLabel[status]}</option>)}</select></label>
+                <div className="analysis-delete-actions"><button type="button" className="analysis-delete-cancel" onClick={() => setAnalysisToEdit(null)}>Batal</button><button type="submit" className="analysis-delete-confirm" disabled={busy}>Simpan</button></div>
+              </form>
+            </div>
+          </section>
+        </div>}
+        {confirmation && <ConfirmationDialog {...confirmation} onConfirm={() => { const action = confirmation.onConfirm; setConfirmation(null); action(); }} onCancel={() => setConfirmation(null)} />}
+      </>}
   </main>;
 }

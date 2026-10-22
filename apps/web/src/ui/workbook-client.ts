@@ -1,4 +1,4 @@
-import type { SaveRequest } from "../application/contracts.ts";
+import type { AnalysisPage, SaveRequest } from "../application/contracts.ts";
 import type { StableId } from "../domain/ids.ts";
 
 export interface SessionInfo { readonly actorId: StableId<"user"> | null }
@@ -6,11 +6,60 @@ let sessionFlight: Promise<SessionInfo> | null = null;
 let refreshFlight: Promise<unknown> | null = null;
 let sessionController = new AbortController();
 
+export type ProjectListItem = { id: string; name: string };
+type WorkbookList = ProjectListItem[] | AnalysisPage;
+type ListEntry = { projectId: string | null; value: WorkbookList | undefined; savedAt: number;
+  pending: Promise<WorkbookList | undefined> | null };
+const listCache = new Map<string, ListEntry>();
+const LIST_TTL = 30000;
+
+export function cachedWorkbookList<T extends WorkbookList>(actorId: string, url: string): T | undefined {
+  return listCache.get(`${actorId}:${url}`)?.value as T | undefined;
+}
+
+export function readWorkbookList<T extends WorkbookList>(actorId: string, url: string): {
+  cached: T | undefined; pending: Promise<T | undefined> | null;
+} {
+  const parsed = new URL(url, "http://localhost");
+  const params = parsed.searchParams;
+  const view = params.get("view");
+  if (parsed.pathname !== "/api/workbook" || (view !== "projects" && view !== "analyses") ||
+    (view === "analyses" && !params.get("projectId"))) throw new TypeError("Only workbook lists may be cached.");
+  const key = `${actorId}:${url}`;
+  let entry = listCache.get(key);
+  if (!entry) entry = { projectId: view === "analyses" ? params.get("projectId") : null, value: undefined, savedAt: 0, pending: null };
+  listCache.delete(key); listCache.set(key, entry);
+  const pages = [...listCache].filter(([, value]) => value.projectId !== null);
+  for (const [oldest] of pages.slice(0, Math.max(0, pages.length - 20))) listCache.delete(oldest);
+  if (!entry.pending && (entry.value === undefined || Date.now() - entry.savedAt >= LIST_TTL)) {
+    const target = entry;
+    const pending = api<T>(url).then(value => {
+      // Invalidated requests must not repopulate the cache or update their old callers.
+      if (listCache.get(key) !== target) return undefined;
+      target.value = value; target.savedAt = Date.now();
+      return value;
+    }, cause => {
+      if (cause instanceof ApiError && (cause.code === "SESSION_CHANGED" || cause.code === "UNAUTHENTICATED")) throw cause;
+      if (listCache.get(key) !== target) return undefined;
+      throw cause;
+    }).finally(() => { if (target.pending === pending) target.pending = null; });
+    entry.pending = pending;
+  }
+  return { cached: entry.value as T | undefined, pending: entry.pending as Promise<T | undefined> | null };
+}
+
+export function invalidateWorkbookLists(projectId: string, projectsChanged = false) {
+  for (const [key, entry] of listCache) {
+    if (entry.projectId === projectId || (projectsChanged && entry.projectId === null)) listCache.delete(key);
+  }
+}
+
 export function invalidateSessionRequests() {
   sessionController.abort();
   sessionController = new AbortController();
   sessionFlight = null;
   refreshFlight = null;
+  listCache.clear();
 }
 
 // Share pending requests only; never retain an authenticated result after it settles.
@@ -70,7 +119,10 @@ export async function api<T>(url: string, init: RequestInit = {}, refresh = true
     throw cause;
   }
   if (sessionSignal.aborted) throw new ApiError("SESSION_CHANGED");
-  if (!response.ok) throw new ApiError(data.code ?? "REQUEST_FAILED");
+  if (!response.ok) {
+    if (response.status === 401) listCache.clear();
+    throw new ApiError(data.code ?? "REQUEST_FAILED");
+  }
   return data as T;
 }
 export function saveRequestBody(request: SaveRequest) { return JSON.stringify({ operation: "SAVE", request }); }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { X509Certificate } from "node:crypto";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { runtimeConfiguration } from "../src/server/runtime-configuration.ts";
 
@@ -8,6 +9,16 @@ const remote = {
   SUPABASE_URL: "https://example.supabase.co",
   SUPABASE_PUBLISHABLE_KEY: "sb_publishable_test",
 };
+
+test("Vercel Functions run in Singapore without changing the Node.js runtime", () => {
+  const deployment = JSON.parse(readFileSync(new URL("../vercel.json", import.meta.url), "utf8"));
+  assert.deepEqual(deployment, { regions: ["sin1"] });
+  for (const route of ["session", "workbook"]) {
+    const source = readFileSync(new URL(`../src/app/api/${route}/route.ts`, import.meta.url), "utf8");
+    assert(source.includes('export const runtime = "nodejs"'));
+    assert(!source.includes("preferredRegion"));
+  }
+});
 
 test("remote database trusts the bundled CA and requires certificate verification", () => {
   const { ssl } = runtimeConfiguration(remote);
