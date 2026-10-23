@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, PointerEvent } from "react";
 import Image from "next/image";
-import { AlertTriangle, ArrowLeft, ChevronRight, LogIn, LogOut, Pencil, Save, Trash2 } from "lucide-react";
-import type { WorkbookSnapshot } from "../domain/contracts.ts";
+import { AlertTriangle, ArrowLeft, Building2, ChevronRight, FileSpreadsheet, LogIn, LogOut, Pencil, Save, Trash2 } from "lucide-react";
+import type { WorkbookSnapshot, WorksheetView } from "../domain/contracts.ts";
 import type { StableId } from "../domain/ids.ts";
 import { createStableId as id, parseStableId } from "../domain/ids.ts";
 import { updateCellInput } from "../domain/commands.ts";
@@ -12,10 +12,14 @@ import { appendField } from "../domain/workflow.ts";
 import { analysisDateInput, analysisPeriod, createAnalysisWorkbook } from "../domain/analysis-creation.ts";
 import { canonicalJson, captureSnapshot } from "../domain/snapshots.ts";
 import type { AnalysisListItem, AnalysisPage, AnalysisMetadata, SaveRequest, SaveOutcome, LoadedWorkbook } from "../application/contracts.ts";
-import { FormulaEngine } from "../engine/formula-engine.ts";
+import { FormulaEngine, worksheetRunView } from "../engine/formula-engine.ts";
 import type { EngineConfiguration, EngineRun } from "../engine/contracts.ts";
-import { api, ApiError, invalidateSessionRequests, readSession, saveRequestBody } from "./workbook-client.ts";
+import { api, ApiError, cachedWorkbookList, invalidateSessionRequests, invalidateWorkbookLists, prefetchWorkbookList, readSession, readWorkbookList, saveRequestBody } from "./workbook-client.ts";
+import type { ProjectListItem } from "./workbook-client.ts";
 import { measureWorkbookTask, recordWorkbookTiming } from "./workbook-performance.ts";
+import { ExternalAhsSurface } from "./external-ahs-surface.tsx";
+import { createExternalAhs, internalAhsFingerprint, refreshExternalAhs } from "../domain/external-ahs.ts";
+import { PROFILES } from "../domain/profiles.ts";
 import { WorksheetSurface } from "./worksheet-surface.tsx";
 import { LoadingIndicator } from "./loading-indicator.tsx";
 import { ConfirmationDialog } from "./confirmation-dialog.tsx";
@@ -34,8 +38,9 @@ import type { AnalysisStatus } from "../domain/analysis-status.ts";
 import { analysisListUrl, matchesName, projectLocationUrl, readProjectLocation } from "./project-navigation.ts";
 import type { ProjectLocation } from "./project-navigation.ts";
 
-type ProjectListItem = { id: string; name: string };
-type Confirmation = { eyebrow: string; title: string; description: string; confirmLabel?: string; cancelLabel?: string; onConfirm: () => void };
+type Confirmation = { eyebrow: string; title: string; description: string; confirmLabel?: string; cancelLabel?: string; secondaryLabel?: string; onSecondary?: () => void | Promise<void>; onConfirm: () => void | Promise<void> };
+type ExternalPreparation = { analysisId: string; epoch: number; actorId: string | null; profile: string;
+  resume?: (result: { run: EngineRun | null; error?: string }) => void };
 function field(form: FormData, name: string) { return String(form.get(name) ?? "").trim(); }
 function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); return new FormData(event.currentTarget); }
 export function ProcurementWorkspace() {
@@ -46,6 +51,7 @@ export function ProcurementWorkspace() {
   const loadingLabel = busy ? (saving ? "Menyimpan perubahan…" : "Memproses…") : "Menyiapkan cetakan…";
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [analyses, setAnalyses] = useState<AnalysisListItem[]>([]);
+  const [draftAnalysisStatus, setDraftAnalysisStatus] = useState<AnalysisStatus | null>(null);
   const [analysisPage, setAnalysisPage] = useState<AnalysisPage>({ items: [], total: 0, periods: [], nextCursor: null, previousCursor: null });
   const [location, setLocation] = useState(() => readProjectLocation(""));
   const locationRef = useRef(location);
@@ -55,11 +61,23 @@ export function ProcurementWorkspace() {
   const acceptHistory = useRef(false);
   const [snapshot, setSnapshot] = useState<WorkbookSnapshot | null>(null);
   const [dirty, setDirty] = useState(false);
+  const [worksheetView, setWorksheetView] = useState<WorksheetView>("INTERNAL");
+  const [preparingExternal, setPreparingExternal] = useState(false);
+  const [externalNotice, setExternalNotice] = useState("");
+  const pendingExternal = useRef<ExternalPreparation | null>(null);
+  const cancelExternalPreparation = useCallback(() => {
+    const pending = pendingExternal.current;
+    pendingExternal.current = null;
+    pending?.resume?.({ run: null });
+    setPreparingExternal(false);
+  }, []);
   const [configuration, setConfiguration] = useState<EngineConfiguration | null>(null);
   const configurationRef = useRef<EngineConfiguration | null>(null);
   const snapshotRef = useRef<WorkbookSnapshot | null>(null);
   const savedSnapshotRef = useRef<WorkbookSnapshot | null>(null);
+  const saveActionRef = useRef<(() => Promise<void>) | null>(null);
   const previewRef = useRef<EngineRun | null>(null);
+  const calculationErrorRef = useRef<{ snapshotId: string; error: string } | null>(null);
   const [calculatedPreview, setCalculatedPreview] = useState<{ snapshotId: string; run: EngineRun | null; error: string } | null>(null);
   const pendingSave = useRef<SaveRequest | null>(null);
   const lastActor = useRef<StableId<"user"> | null>(null);
@@ -72,6 +90,39 @@ export function ProcurementWorkspace() {
   const [projectToDelete, setProjectToDelete] = useState<ProjectListItem | null>(null);
   const [projectContextMenu, setProjectContextMenu] = useState<{ project: ProjectListItem; x: number; y: number } | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const commitWorksheetEdit = useCallback(() => {
+    const active = document.activeElement;
+    const input = document.querySelector<HTMLInputElement>('[data-testid="procurement-sheet"] .formula-bar-form input');
+    const cellEditing = active instanceof HTMLInputElement && active.matches('[data-testid="procurement-sheet"] .sheet-input') && active.value !== active.dataset.raw;
+    if (input?.form && (input.dataset.editing === "true" || cellEditing)) {
+      input.form.requestSubmit();
+      if (input.form.dataset.commitFailed === "true") { setError("Perbaiki input sel sebelum melanjutkan."); return false; }
+    }
+    if (document.activeElement instanceof HTMLInputElement) document.activeElement.blur();
+    if (document.querySelector('[data-testid="procurement-sheet"] .sheet-input[data-invalid="true"]')) { setError("Perbaiki input sel sebelum melanjutkan."); return false; }
+    return true;
+  }, []);
+  const confirmLeaving = useCallback((action: () => void, withinAnalysis = false) => {
+    const epoch = workspaceEpoch.current, actorId = lastActor.current, analysisId = snapshotRef.current?.analysisId;
+    const current = () => workspaceEpoch.current === epoch && lastActor.current === actorId && snapshotRef.current?.analysisId === analysisId;
+    setConfirmation({ eyebrow: "Perubahan belum disimpan", title: withinAnalysis ? "Kembali ke Internal?" : "Keluar dari analisis?",
+      description: withinAnalysis ? "Simpan kedua halaman sebelum pindah, atau lanjutkan dengan draft yang tetap ada di analisis ini." : "Simpan kedua halaman sebelum keluar. Keluar tanpa menyimpan membuang seluruh perubahan sejak penyimpanan terakhir.",
+      cancelLabel: "Batal", confirmLabel: withinAnalysis ? "Simpan dan pindah" : "Simpan dan keluar",
+      secondaryLabel: withinAnalysis ? "Pindah tanpa menyimpan" : "Keluar tanpa menyimpan",
+      onSecondary: () => { if (current()) action(); },
+      onConfirm: async () => {
+        if (!current()) return;
+        if (!saveActionRef.current) throw new Error("Penyimpanan belum siap.");
+        setBusy(true); setSaving(true);
+        try {
+          await saveActionRef.current();
+          if (!current()) return;
+          if (!snapshotRef.current || !savedSnapshotRef.current || canonicalJson(snapshotRef.current) !== canonicalJson(savedSnapshotRef.current)) throw new Error("Masih ada perubahan belum disimpan. Simpan kembali sebelum keluar.");
+        } finally { setBusy(false); setSaving(false); }
+        if (current()) action();
+      },
+    });
+  }, []);
   const [volumeError, setVolumeError] = useState("");
   const volumeErrorRef = useRef("");
 
@@ -89,15 +140,34 @@ export function ProcurementWorkspace() {
   const savedVersion = useRef<StableId<"version"> | null>(null);
   const renderTiming = useRef<{ snapshotId: string; started: number; stage: "worksheet-render" | "save-render" } | null>(null);
   const projectLongPressTimer = useRef<number | null>(null);
+  const projectPrefetchTimer = useRef<number | null>(null);
   const suppressProjectClick = useRef(false);
   useEffect(() => () => {
     workspaceEpoch.current++;
+    pendingExternal.current?.resume?.({ run: null }); pendingExternal.current = null;
     if (projectLongPressTimer.current !== null) window.clearTimeout(projectLongPressTimer.current);
+    if (projectPrefetchTimer.current !== null) window.clearTimeout(projectPrefetchTimer.current);
   }, []);
 
   const requireLogin = useCallback((status: string) => {
+    cancelExternalPreparation();
+    if (projectPrefetchTimer.current !== null) window.clearTimeout(projectPrefetchTimer.current);
     invalidateSessionRequests(); workspaceEpoch.current++;
     setActor(null); setError(""); setMessage(status); setBusy(false);
+  }, [cancelExternalPreparation]);
+
+  const backgroundError = useCallback((cause: unknown) => {
+    if (cause instanceof ApiError && cause.code === "SESSION_CHANGED") return;
+    if (cause instanceof ApiError && cause.code === "UNAUTHENTICATED") { requireLogin("Sesi berakhir. Silakan masuk kembali."); return; }
+    setError(cause instanceof Error ? cause.message : "Pembaruan daftar gagal. Data terakhir tetap ditampilkan.");
+  }, [requireLogin]);
+
+  const canRestoreWithoutLoading = useCallback((next: ProjectLocation) => {
+    const actorId = lastActor.current;
+    if (!actorId || next.analysisId) return false;
+    const cachedProjects = cachedWorkbookList<ProjectListItem[]>(actorId, "/api/workbook?view=projects");
+    return !!cachedProjects && (!next.projectId || (cachedProjects.some(project => project.id === next.projectId) &&
+      cachedWorkbookList<AnalysisPage>(actorId, analysisListUrl(next)) !== undefined));
   }, []);
 
   const writeLocation = useCallback((next: ProjectLocation, mode: "push" | "replace" = "push") => {
@@ -107,14 +177,17 @@ export function ProcurementWorkspace() {
   }, []);
 
   const clearWorksheet = useCallback(() => {
+    cancelExternalPreparation(); setExternalNotice("");
+    setDraftAnalysisStatus(null);
     renderTiming.current = null;
     snapshotRef.current = null; savedSnapshotRef.current = null; configurationRef.current = null;
-    setSnapshot(null); savedVersion.current = null; setConfiguration(null); setDirty(false);
+    setSnapshot(null); setWorksheetView("INTERNAL"); savedVersion.current = null; setConfiguration(null); setDirty(false);
     setNewWorkbookProjectId(null); pendingSave.current = null; setVolumeError(""); volumeErrorRef.current = "";
     previewRef.current = null; setCalculatedPreview(null);
-  }, []);
+  }, [cancelExternalPreparation]);
 
   const load = useCallback(async (analysisId: string) => {
+    cancelExternalPreparation(); setExternalNotice("");
     const started = performance.now();
     try {
       const epoch = ++workspaceEpoch.current, actorId = lastActor.current;
@@ -138,13 +211,14 @@ export function ProcurementWorkspace() {
       if (workspaceEpoch.current !== epoch || lastActor.current !== actorId) return;
       renderTiming.current = { snapshotId: s.id, started, stage: "worksheet-render" };
       previewRef.current = null; configurationRef.current = config; snapshotRef.current = s; setSnapshot(s);
-      savedVersion.current = stored.version;
+      setWorksheetView("INTERNAL"); savedVersion.current = stored.version;
+      setDraftAnalysisStatus(null);
       setConfiguration(config); savedSnapshotRef.current = s; setDirty(false); pendingSave.current = null;
       setAnalyses([{ ...stored.analysisMetadata, project_id: s.projectId, period: null }]);
       writeLocation({ ...locationRef.current, projectId: s.projectId, analysisId }, "replace");
       setMessage("Analisis dimuat.");
     } finally { recordWorkbookTiming("load", started); }
-  }, [prepareVolumes, writeLocation]);
+  }, [cancelExternalPreparation, prepareVolumes, writeLocation]);
 
   useEffect(() => {
     const pending = renderTiming.current;
@@ -160,8 +234,13 @@ export function ProcurementWorkspace() {
   }, [snapshot]);
   const refreshProjects = useCallback(async () => {
     const actorId = lastActor.current;
-    const next = await api<ProjectListItem[]>("/api/workbook?view=projects");
-    if (lastActor.current === actorId) { projectsRef.current = next; setProjects(next); }
+    if (!actorId) return;
+    const { cached, pending } = readWorkbookList<ProjectListItem[]>(actorId, "/api/workbook?view=projects");
+    if (cached) { projectsRef.current = cached; setProjects(cached); }
+    const next = await pending;
+    if (next && lastActor.current === actorId && cachedWorkbookList(actorId, "/api/workbook?view=projects") === next) {
+      projectsRef.current = next; setProjects(next);
+    }
   }, []);
 
   const restoreLocation = useCallback(async (next: ProjectLocation) => {
@@ -175,27 +254,48 @@ export function ProcurementWorkspace() {
       return;
     }
     const epoch = ++workspaceEpoch.current, actorId = lastActor.current;
-    clearWorksheet(); setAnalyses([]);
+    const current = () => workspaceEpoch.current === epoch && lastActor.current === actorId;
+    const fail = (cause: unknown) => { if (current()) backgroundError(cause); };
+    clearWorksheet();
+    if (!actorId) return;
+    const cachedPage = next.projectId ? cachedWorkbookList<AnalysisPage>(actorId, analysisListUrl(next)) : undefined;
+    setAnalyses([...(cachedPage?.items ?? [])]);
+    if (cachedPage) setAnalysisPage(cachedPage);
+    const cachedProjects = cachedWorkbookList<ProjectListItem[]>(actorId, "/api/workbook?view=projects");
+    const projects = refreshProjects();
+    if (!cachedProjects || (next.projectId && !cachedProjects.some(project => project.id === next.projectId))) await projects;
+    else void projects.catch(fail);
+    if (!current()) return;
     if (!next.projectId) { setMessage("Daftar proyek."); return; }
     const projectId = parseStableId<"project">(next.projectId);
     if (!projectsRef.current.some(project => project.id === projectId)) throw new Error("Proyek tidak ditemukan atau tidak dapat diakses.");
-    const page = await api<AnalysisPage>(analysisListUrl(next));
-    if (workspaceEpoch.current === epoch && lastActor.current === actorId) { setAnalyses([...page.items]); setAnalysisPage(page); setMessage("Pilih analisis yang akan dibuka."); }
-  }, [clearWorksheet, load]);
+    const { cached, pending } = readWorkbookList<AnalysisPage>(actorId, analysisListUrl(next));
+    const apply = (page: AnalysisPage | undefined) => {
+      if (page && current() && cachedWorkbookList(actorId, analysisListUrl(next)) === page) {
+        setAnalyses([...page.items]); setAnalysisPage(page);
+      }
+    };
+    apply(cached);
+    if (cached) void pending?.then(apply).catch(fail);
+    else apply(await pending ?? undefined);
+    if (current()) setMessage("Pilih analisis yang akan dibuka.");
+  }, [backgroundError, clearWorksheet, load, refreshProjects]);
 
   function navigate(next: ProjectLocation, discardDraft = false) {
+    if (!discardDraft && !commitWorksheetEdit()) return;
     if (dirty && !discardDraft) {
-      setConfirmation({ eyebrow: "Peringatan keras", title: "Perubahan belum disimpan", description: "Jika Anda keluar sekarang, semua perubahan sejak penyimpanan terakhir akan hilang permanen. Simpan data terlebih dahulu atau pilih keluar dan buang perubahan.", cancelLabel: "Tetap di halaman", confirmLabel: "Keluar dan buang perubahan", onConfirm: () => navigate(next, true) });
+      confirmLeaving(() => navigate(next, true));
       return;
     }
     writeLocation(next);
-    void task(() => restoreLocation(next));
+    cancelProjectPrefetch();
+    void task(() => restoreLocation(next), false, !canRestoreWithoutLoading(next));
   }
 
   function updateFilters(next: Partial<Pick<ProjectLocation, "projectQuery" | "analysisQuery" | "status" | "period">>) {
     const updated = { ...locationRef.current, ...next, after: "", before: "" };
     writeLocation(updated, "replace");
-    if (updated.projectId) void task(() => restoreLocation(updated));
+    if (updated.projectId) void task(() => restoreLocation(updated), false, !canRestoreWithoutLoading(updated));
   }
   function showAnalysisForm(projectId: string) {
     setNewAnalysisDate(analysisDateInput());
@@ -203,8 +303,26 @@ export function ProcurementWorkspace() {
     setNewWorkbookProjectId(projectId);
     setError("");
   }
-  function showProject(projectId: string) {
-    navigate({ ...locationRef.current, projectId, analysisId: null, analysisQuery: "", status: "", period: "", after: "", before: "" });
+  function projectLocation(projectId: string): ProjectLocation {
+    return { ...locationRef.current, projectId, analysisId: null, analysisQuery: "", status: "", period: "", after: "", before: "" };
+  }
+  function showProject(projectId: string) { navigate(projectLocation(projectId)); }
+  function cancelProjectPrefetch() {
+    if (projectPrefetchTimer.current !== null) window.clearTimeout(projectPrefetchTimer.current);
+    projectPrefetchTimer.current = null;
+  }
+  function prefetchProject(projectId: string) {
+    cancelProjectPrefetch();
+    if (busy || !actor) return;
+    const actorId = actor, epoch = workspaceEpoch.current;
+    const next = projectLocation(projectId);
+    projectPrefetchTimer.current = window.setTimeout(() => {
+      projectPrefetchTimer.current = null;
+      if (workspaceEpoch.current !== epoch || lastActor.current !== actorId) return;
+      void prefetchWorkbookList(actorId, analysisListUrl(next))?.catch(cause => {
+        if (lastActor.current === actorId && cause instanceof ApiError && cause.code === "UNAUTHENTICATED") requireLogin("Sesi berakhir. Silakan masuk kembali.");
+      });
+    }, 150);
   }
   function openProjectContextMenu(project: ProjectListItem, x: number, y: number) {
     setProjectContextMenu({ project, x: Math.min(x, window.innerWidth - 220), y: Math.min(y, window.innerHeight - 70) });
@@ -238,6 +356,7 @@ export function ProcurementWorkspace() {
       })
     });
     if (workspaceEpoch.current !== epoch || lastActor.current !== actorId) return;
+    invalidateWorkbookLists(analysis.project_id);
     setAnalyses(current => current.map(item => item.id === analysis.id ? { ...item, ...updated } : item));
     if (snapshotRef.current?.analysisId === analysis.id) {
       savedVersion.current = updated.version;
@@ -260,9 +379,12 @@ export function ProcurementWorkspace() {
     void task(() => persistAnalysisMetadata(analysis, name, status));
   }
   function updateActiveAnalysisStatus(status: AnalysisStatus) {
+    if (savedVersion.current === null) {
+      setDraftAnalysisStatus(status); setDirty(true); return;
+    }
     const analysis = snapshot && analyses.find(item => item.id === snapshot.analysisId);
     if (!analysis) return;
-    void task(() => persistAnalysisMetadata(analysis, analysis.name, status));
+    void task(async () => { await persistAnalysisMetadata(analysis, analysis.name, status); setDraftAnalysisStatus(null); });
   }
   function confirmRemoveAnalysis() {
     if (!analysisToDelete) return;
@@ -270,12 +392,14 @@ export function ProcurementWorkspace() {
     setAnalysisToDelete(null);
     void task(async () => {
       await api("/api/workbook", { method: "DELETE", body: JSON.stringify({ operation: "DELETE_ANALYSIS", analysisId: analysis.id }) });
+      invalidateWorkbookLists(projectId);
       setAnalyses(current => current.filter(item => item.id !== analysis.id));
       setMessage("Analisis dihapus.");
-      await refreshProjects();
       const epoch = workspaceEpoch.current;
-      const page = await api<AnalysisPage>(analysisListUrl(locationRef.current));
-      if (workspaceEpoch.current === epoch && locationRef.current.projectId === projectId) {
+      const actorId = lastActor.current;
+      if (!actorId) return;
+      const page = await readWorkbookList<AnalysisPage>(actorId, analysisListUrl(locationRef.current)).pending;
+      if (page && workspaceEpoch.current === epoch && lastActor.current === actorId && locationRef.current.projectId === projectId) {
         setAnalyses([...page.items]); setAnalysisPage(page);
         if (!page.items.length && (locationRef.current.after || locationRef.current.before)) {
           const first = { ...locationRef.current, after: "", before: "" };
@@ -290,6 +414,7 @@ export function ProcurementWorkspace() {
     setProjectToDelete(null);
     void task(async () => {
       await api("/api/workbook", { method: "DELETE", body: JSON.stringify({ operation: "DELETE_PROJECT", projectId: project.id }) });
+      invalidateWorkbookLists(project.id, true);
       projectsRef.current = projectsRef.current.filter(item => item.id !== project.id); setProjects(projectsRef.current);
       if (locationRef.current.projectId === project.id) {
         clearWorksheet(); setAnalyses([]);
@@ -306,8 +431,9 @@ export function ProcurementWorkspace() {
     navigate({ ...locationRef.current, projectId: projectId && projectsRef.current.some(project => project.id === projectId) ? projectId : null, analysisId: null });
   }
   function logout(discardDraft = false) {
+    if (!discardDraft && !commitWorksheetEdit()) return;
     if (dirty && !discardDraft) {
-      setConfirmation({ eyebrow: "Peringatan keras", title: "Perubahan belum disimpan", description: "Jika Anda keluar sekarang, semua perubahan sejak penyimpanan terakhir akan hilang permanen. Simpan data terlebih dahulu atau pilih keluar dan buang perubahan.", cancelLabel: "Tetap di halaman", confirmLabel: "Keluar dan buang perubahan", onConfirm: () => logout(true) });
+      confirmLeaving(() => logout(true));
       return;
     }
     void task(async () => {
@@ -316,9 +442,9 @@ export function ProcurementWorkspace() {
       writeLocation(readProjectLocation(""), "replace"); setMessage("Berhasil keluar.");
     });
   }
-  const task = useCallback(async (action: () => void | Promise<void>, isSave = false) => {
+  const task = useCallback(async (action: () => void | Promise<void>, isSave = false, blocking = true) => {
     const sequence = ++taskSequence.current;
-    setBusy(true); setSaving(isSave); setError(""); setMessage("Memproses…");
+    setBusy(blocking); setSaving(isSave); setError(""); setMessage("Memproses…");
     try { await action(); }
     catch (cause) {
       if (sequence !== taskSequence.current) return;
@@ -369,15 +495,36 @@ export function ProcurementWorkspace() {
       const leavingDraft = dirty && snapshotRef.current && next.analysisId !== snapshotRef.current.analysisId;
       if (leavingDraft && !acceptHistory.current && delta) {
         // Restore the actual history position before asking, so Cancel preserves Forward/Back.
-        restoringHistory.current = () => setConfirmation({ eyebrow: "Peringatan keras", title: "Perubahan belum disimpan", description: "Jika Anda keluar sekarang, semua perubahan sejak penyimpanan terakhir akan hilang permanen. Simpan data terlebih dahulu atau pilih keluar dan buang perubahan.", cancelLabel: "Tetap di halaman", confirmLabel: "Keluar dan buang perubahan", onConfirm: () => { acceptHistory.current = true; window.history.go(-delta); } });
+        restoringHistory.current = () => { if (commitWorksheetEdit()) confirmLeaving(() => { acceptHistory.current = true; window.history.go(-delta); }); };
         window.history.go(delta); return;
       }
       acceptHistory.current = false; historyIndex.current = targetIndex;
-      void task(() => restoreLocation(next));
+      void task(() => restoreLocation(next), false, !canRestoreWithoutLoading(next));
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, [actor, dirty, restoreLocation, task]);
+  }, [actor, canRestoreWithoutLoading, commitWorksheetEdit, confirmLeaving, dirty, restoreLocation, task]);
+  useEffect(() => {
+    if (!actor) return;
+    const refresh = () => {
+      if (busy || document.visibilityState !== "visible" || snapshotRef.current) return;
+      const next = locationRef.current, epoch = workspaceEpoch.current;
+      const current = () => workspaceEpoch.current === epoch && lastActor.current === actor && !snapshotRef.current;
+      const fail = (cause: unknown) => { if (current()) backgroundError(cause); };
+      void refreshProjects().catch(fail);
+      if (next.projectId) {
+        const { pending } = readWorkbookList<AnalysisPage>(actor, analysisListUrl(next));
+        void pending?.then(page => {
+          if (page && current() && cachedWorkbookList(actor, analysisListUrl(next)) === page) {
+            setAnalyses([...page.items]); setAnalysisPage(page);
+          }
+        }).catch(fail);
+      }
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
+  }, [actor, backgroundError, busy, refreshProjects]);
   useEffect(() => {
     const channel = new BroadcastChannel("procurement-session"); sessionChannel.current = channel;
     channel.onmessage = event => {
@@ -391,7 +538,7 @@ export function ProcurementWorkspace() {
   }, [dirty]);
 
   function edit(s: WorkbookSnapshot, config = s.workbook ? s.workbook.configuration : configurationRef.current) {
-    if (snapshotRef.current?.analysisId !== s.analysisId) { workspaceEpoch.current++; savedVersion.current = null; }
+    if (snapshotRef.current?.analysisId !== s.analysisId) { cancelExternalPreparation(); setExternalNotice(""); workspaceEpoch.current++; savedVersion.current = null; setWorksheetView("INTERNAL"); }
     config = s.workbook ? s.workbook.configuration : legacyConfiguration(s, config);
     ({ snapshot: s, configuration: config } = prepareCalculationPolicy(s, config));
     s = prepareVolumes(prepareNumericBlanks(makeAhsSaleInput(connectAhsHpp(prepareLegacySheet(prepareVendorColumns(s))))));
@@ -416,38 +563,104 @@ export function ProcurementWorkspace() {
             previous.manifest.snapshot.activeProfile === snapshot.activeProfile
             ? engine.recalculate(snapshot, previous) : engine.evaluate(snapshot);
         });
-        if (active) { previewRef.current = run; setCalculatedPreview({ snapshotId: snapshot.id, run, error: "" }); }
+        if (active) {
+          calculationErrorRef.current = null; previewRef.current = run; setCalculatedPreview({ snapshotId: snapshot.id, run, error: "" });
+          pendingExternal.current?.resume?.({ run });
+        }
       } catch (cause) {
-        if (active) setCalculatedPreview({ snapshotId: snapshot.id, run: null, error: cause instanceof Error ? cause.message : "Konfigurasi tidak valid." });
+        if (active) {
+          const error = cause instanceof Error ? cause.message : "Konfigurasi tidak valid.";
+          calculationErrorRef.current = { snapshotId: snapshot.id, error };
+          setCalculatedPreview({ snapshotId: snapshot.id, run: null, error });
+          pendingExternal.current?.resume?.({ run: null, error });
+        }
       }
     }, 0);
     return () => { active = false; window.clearTimeout(timer); };
   }, [snapshot, configuration]);
-  const preview = calculatedPreview?.snapshotId === snapshot?.id ? calculatedPreview : null;
+  const preview = useMemo(() => calculatedPreview && calculatedPreview.snapshotId === snapshot?.id
+    ? { ...calculatedPreview, run: calculatedPreview.run ? worksheetRunView(calculatedPreview.run, worksheetView) : null } : null,
+  [calculatedPreview, snapshot?.id, worksheetView]);
+  async function switchWorksheetView(view: WorksheetView, options: { replace?: boolean; skipExit?: boolean } = {}) {
+    if (busy) return;
+    if (view === "INTERNAL") cancelExternalPreparation();
+    else if (pendingExternal.current) return;
+    if (!commitWorksheetEdit()) return;
+    if (view === "INTERNAL" && worksheetView === "EXTERNAL" && dirty && !options.skipExit) {
+      confirmLeaving(() => { void switchWorksheetView("INTERNAL", { skipExit: true }); }, true); return;
+    }
+    if (view === "INTERNAL") {
+      startTransition(() => setWorksheetView(view)); return;
+    }
+    let current = snapshotRef.current;
+    if (!current || !configurationRef.current) return;
+    const request: ExternalPreparation = { analysisId: current.analysisId, epoch: workspaceEpoch.current, actorId: lastActor.current, profile: current.activeProfile };
+    const valid = () => workspaceEpoch.current === request.epoch && lastActor.current === request.actorId &&
+      snapshotRef.current?.analysisId === request.analysisId && snapshotRef.current.activeProfile === request.profile;
+    pendingExternal.current = request; setPreparingExternal(true); setError("");
+    try {
+      for (;;) {
+        let run = previewRef.current;
+        while (run?.snapshotId !== current.id) {
+          if (calculationErrorRef.current?.snapshotId === current.id) throw new Error(calculationErrorRef.current.error);
+          if (calculatedPreview?.snapshotId === current.id && calculatedPreview.error) throw new Error(calculatedPreview.error);
+          const result = await new Promise<{ run: EngineRun | null; error?: string }>(resolve => { request.resume = resolve; });
+          if (pendingExternal.current !== request || !valid()) return;
+          if (result.error) throw new Error(result.error);
+          if (!result.run) return;
+          current = snapshotRef.current!; run = result.run;
+        }
+        if (pendingExternal.current !== request || !valid() || !configurationRef.current) return;
+        const config: EngineConfiguration = configurationRef.current;
+        const hasExternal = current.worksheets.some(w => w.stage === "AHS_EXTERNAL");
+        const profiles = hasExternal ? [current.activeProfile] : PROFILES;
+        const fingerprints = Object.fromEntries(await Promise.all(profiles.map(async profile => [profile, await internalAhsFingerprint(current!, config, run, profile)])));
+        if (pendingExternal.current !== request || !valid()) return;
+        if (snapshotRef.current!.id !== current.id || configurationRef.current !== config) { current = snapshotRef.current!; continue; }
+        const fingerprint = fingerprints[current.activeProfile]!;
+        if (hasExternal && !options.replace) {
+          if (current.externalAhs?.sourceFingerprints?.[current.activeProfile] !== fingerprint) {
+            setConfirmation({ eyebrow: "AHS Eksternal", title: "Gunakan data Internal terbaru untuk profil ini?",
+              description: `Perbarui seluruh AHS Eksternal ${current.activeProfile === "INU" ? "INU" : "SKP"} dari Internal terbaru. Nilai, rumus, catatan, kelompok, dan uraian tambahan Eksternal pada profil ini akan diganti. Profil lain tetap dipertahankan.`,
+              confirmLabel: "Perbarui Eksternal", secondaryLabel: "Tetap pakai Eksternal", cancelLabel: "Batal",
+              onConfirm: async () => { if (valid()) await switchWorksheetView("EXTERNAL", { replace: true }); },
+              onSecondary: () => { if (valid()) startTransition(() => setWorksheetView("EXTERNAL")); },
+            });
+          } else startTransition(() => setWorksheetView("EXTERNAL"));
+          return;
+        }
+        const copied = hasExternal ? refreshExternalAhs(current, config, run, fingerprint) : createExternalAhs(current, config, run, fingerprints);
+        edit(copied.snapshot, copied.configuration);
+        setExternalNotice(copied.incomplete ? `${copied.incomplete} nilai sumber Internal belum tersedia; sel Eksternal tersebut dibiarkan kosong.` : "");
+        setMessage(`AHS Eksternal ${hasExternal ? "diperbarui" : "dibuat"} dari draft Internal. Perubahan belum disimpan.`);
+        startTransition(() => setWorksheetView("EXTERNAL")); return;
+      }
+    } catch (cause) {
+      if (pendingExternal.current === request && workspaceEpoch.current === request.epoch && lastActor.current === request.actorId) {
+        setError(cause instanceof Error ? cause.message : "AHS Eksternal gagal disiapkan. Klik Eksternal untuk mencoba lagi.");
+      }
+    } finally {
+      if (pendingExternal.current === request) { pendingExternal.current = null; setPreparingExternal(false); }
+    }
+  }
   function save(): Promise<void> {
     if (saveFlight.current) return saveFlight.current;
+    if (pendingExternal.current) return Promise.reject(new Error("Tunggu penyiapan Eksternal selesai sebelum menyimpan."));
     const flight = performSave();
     saveFlight.current = flight;
     void flight.finally(() => { if (saveFlight.current === flight) saveFlight.current = null; }).catch(() => { });
     return flight;
   }
+  useEffect(() => { saveActionRef.current = save; });
   async function performSave() {
     const started = performance.now();
     try {
       const current = measureWorkbookTask("save-input", () => {
         const analysis = analyses.find(item => item.id === snapshotRef.current?.analysisId);
-        if (!analysis || !ANALYSIS_STATUSES.includes(analysis.status)) {
+        if ((!analysis && savedVersion.current !== null) || (analysis && !ANALYSIS_STATUSES.includes(analysis.status))) {
           throw new Error("Status analisis wajib dipilih dan harus valid sebelum data dapat disimpan.");
         }
-        const formulaInput = document.querySelector<HTMLInputElement>('[data-testid="procurement-sheet"] .formula-bar-form input[data-editing="true"]');
-        if (formulaInput) {
-          const form = formulaInput.form;
-          form?.requestSubmit();
-          if (form?.dataset.commitFailed === "true") throw new Error("Perbaiki input sel sebelum menyimpan.");
-        }
-        const active = document.activeElement;
-        if (active instanceof HTMLInputElement && active.matches('[data-testid="procurement-sheet"] .sheet-input')) active.blur();
-        if (document.querySelector('[data-testid="procurement-sheet"] .sheet-input[data-invalid="true"]')) throw new Error("Perbaiki input sel sebelum menyimpan.");
+        if (!commitWorksheetEdit()) throw new Error("Perbaiki input sel sebelum menyimpan.");
         if (volumeErrorRef.current) throw new Error(volumeErrorRef.current);
         return snapshotRef.current;
       });
@@ -465,6 +678,7 @@ export function ProcurementWorkspace() {
       finally { recordWorkbookTiming("save-request", requestStarted); }
       if (outcome.status !== "SAVED") throw new ApiError(outcome.code);
       if (workspaceEpoch.current !== epoch || lastActor.current !== actorId || snapshotRef.current?.analysisId !== current.analysisId) return;
+      invalidateWorkbookLists(current.projectId, !projectsRef.current.some(project => project.id === current.projectId));
       measureWorkbookTask("save-response", () => {
         pendingSave.current = null;
         savedVersion.current = outcome.workbook.version;
@@ -482,6 +696,15 @@ export function ProcurementWorkspace() {
         writeLocation({ ...locationRef.current, projectId: current.projectId, analysisId: current.analysisId }, "replace");
         setMessage(request.expectedVersion === outcome.workbook.version ? "Tidak ada perubahan." : "Tersimpan.");
       });
+      if (draftAnalysisStatus !== null) {
+        try {
+          await persistAnalysisMetadata({ id: current.analysisId, name: current.analysis.analysis.name, project_id: current.projectId, status: "DRAFT", version: outcome.workbook.version, period: analysisPeriod(newAnalysisDate) || null }, current.analysis.analysis.name, draftAnalysisStatus);
+          if (workspaceEpoch.current === epoch && lastActor.current === actorId) setDraftAnalysisStatus(null);
+        } catch (cause) {
+          if (workspaceEpoch.current === epoch && lastActor.current === actorId) setDirty(true);
+          throw cause;
+        }
+      }
     } finally { recordWorkbookTiming("save", started); }
   }
 
@@ -497,7 +720,6 @@ export function ProcurementWorkspace() {
     "NON PPN": { project: "Proyek Pengadaan HSD - Non PPN", analysis: "Analisis Vendor - Non PPN" },
   };
   const selectedDocumentExample = documentExamples[newDocumentType] ?? documentExamples["FULL DOC"]!;
-
   return <main className={actor ? "workbook-app" : "login-app"}>
     <header className="app-header" hidden={!actor}>
       <div className="app-brand"><Image src="/image.png" width={38} height={39} alt="" priority />
@@ -506,7 +728,7 @@ export function ProcurementWorkspace() {
       {actor && <nav className="app-actions" aria-label="Tindakan workspace">
         {dirty && <span className="unsaved-state">Belum disimpan</span>}
         {snapshot && <button type="button" aria-label="Kembali ke proyek" title="Kembali ke proyek" disabled={busy} onClick={returnToProject}><ArrowLeft aria-hidden="true" /></button>}
-        {snapshot && <button type="button" aria-label={saving ? "Menyimpan workbook" : "Simpan workbook"} title={saving ? "Menyimpan…" : "Simpan"} aria-busy={saving} disabled={busy} onClick={() => void task(() => save(), true)}><Save aria-hidden="true" /></button>}
+        {snapshot && <button type="button" aria-label={saving ? "Menyimpan workbook" : "Simpan workbook"} title={saving ? "Menyimpan…" : "Simpan"} aria-busy={saving} disabled={busy || preparingExternal} onClick={() => void task(() => save(), true)}><Save aria-hidden="true" /></button>}
         <button type="button" aria-label="Keluar" title="Keluar" disabled={busy} onClick={() => logout()}><LogOut aria-hidden="true" /></button>
       </nav>}
     </header>
@@ -529,6 +751,14 @@ export function ProcurementWorkspace() {
       });
     }} />
       : <>
+        {snapshot && <nav className="worksheet-view-tabs" aria-label="Halaman analisis">
+          <div className="worksheet-view-switcher" data-view={worksheetView}>
+            {(["INTERNAL", "EXTERNAL"] as const).map(view => <button type="button" key={view} aria-pressed={worksheetView === view} aria-busy={view === "EXTERNAL" && preparingExternal} disabled={busy || (view === "EXTERNAL" && preparingExternal)} onMouseDown={event => { if (event.button === 0) event.preventDefault(); }} onClick={() => void switchWorksheetView(view)}>
+              {view === "INTERNAL" ? <Building2 aria-hidden="true" /> : <FileSpreadsheet aria-hidden="true" />}
+              {view === "INTERNAL" ? "Internal" : preparingExternal ? "Menyiapkan…" : "Eksternal"}
+            </button>)}
+          </div>
+        </nav>}
         {!snapshot ? <section className="project-index" aria-labelledby="project-index-title">
           <header className="project-index-heading">
             <div>
@@ -563,6 +793,7 @@ export function ProcurementWorkspace() {
                 volume: field(form, "volume"),
               });
               edit(next, null);
+              setDraftAnalysisStatus(null);
               savedVersion.current = null; setNewWorkbookProjectId(null);
               writeLocation({ ...locationRef.current, projectId: existing?.id ?? null, analysisId: null });
             });
@@ -628,6 +859,10 @@ export function ProcurementWorkspace() {
                 return <li key={project.id} className="project-row">
                   <div className="project-row-header">
                     <button type="button" className="project-row-button" disabled={busy}
+                      onPointerEnter={event => { if (event.pointerType === "mouse") prefetchProject(project.id); }}
+                      onPointerLeave={cancelProjectPrefetch}
+                      onFocus={() => prefetchProject(project.id)}
+                      onBlur={cancelProjectPrefetch}
                       onClick={() => {
                         if (suppressProjectClick.current) { suppressProjectClick.current = false; return; }
                         showProject(project.id);
@@ -644,12 +879,13 @@ export function ProcurementWorkspace() {
                 </li>;
               })}
             </ol> : <div className="project-empty"><p>{projects.length ? "Tidak ada proyek yang sesuai pencarian." : "Belum ada proyek tersimpan."}</p>{!projects.length && <button type="button" disabled={busy} onClick={() => showAnalysisForm("")}>Buat proyek pertama</button>}</div>}
-        </section> : <WorksheetSurface
+        </section> : worksheetView === "EXTERNAL" && configuration ? <ExternalAhsSurface key={snapshot.analysisId + snapshot.activeProfile} snapshot={snapshot} configuration={configuration} run={preview?.run ?? null} notice={externalNotice} disabled={busy} saving={saving} calculating={!preview} onChange={(next, config) => edit(next, config ?? (next.workbook ? next.workbook.configuration : configurationRef.current))} onSave={() => void task(() => save(), true)} onEditing={() => { setDirty(true); pendingSave.current = null; }} onPrintLoading={setPreparingPrint} /> : <WorksheetSurface
           snapshot={snapshot}
           configuration={configuration}
           run={preview?.run ?? null}
           disabled={busy}
           saving={saving}
+          calculating={!preview}
           onPrintLoading={setPreparingPrint}
           volumeError={volumeError}
           actor={actor}
@@ -662,7 +898,7 @@ export function ProcurementWorkspace() {
           onError={setError}
           onEditing={() => { setDirty(true); pendingSave.current = null; }}
           onSave={() => void task(() => save(), true)}
-          analysisStatus={analyses.find(analysis => analysis.id === snapshot.analysisId)?.status}
+          analysisStatus={draftAnalysisStatus ?? analyses.find(analysis => analysis.id === snapshot.analysisId)?.status ?? (savedVersion.current === null ? "DRAFT" : undefined)}
           onAnalysisStatusChange={updateActiveAnalysisStatus}
           onRequestConfirm={(title, description, onConfirm) => setConfirmation({ eyebrow: "Konfirmasi", title, description, onConfirm })}
           onSelectOffer={(selectionId, vendorName) => {
@@ -730,7 +966,9 @@ export function ProcurementWorkspace() {
             </div>
           </section>
         </div>}
-        {confirmation && <ConfirmationDialog {...confirmation} onConfirm={() => { const action = confirmation.onConfirm; setConfirmation(null); action(); }} onCancel={() => setConfirmation(null)} />}
+        {confirmation && <ConfirmationDialog {...confirmation} onConfirm={async () => { await confirmation.onConfirm(); setConfirmation(current => current === confirmation ? null : current); }}
+          {...(confirmation.onSecondary ? { onSecondary: async () => { await confirmation.onSecondary!(); setConfirmation(current => current === confirmation ? null : current); } } : {})}
+          onCancel={() => setConfirmation(null)} />}
       </>}
   </main>;
 }

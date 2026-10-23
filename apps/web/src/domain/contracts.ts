@@ -72,7 +72,7 @@ export interface TableMerge {
 
 export interface WorksheetSnapshot {
   readonly id: StableId<"worksheet">;
-  readonly stage: "EVALUASI_VENDOR" | "KONVERSI_JAGAD" | "AHS";
+  readonly stage: "EVALUASI_VENDOR" | "KONVERSI_JAGAD" | "AHS" | "AHS_EXTERNAL";
   readonly label: string;
   readonly tables: readonly TableSnapshot[];
 }
@@ -107,7 +107,11 @@ export type CalculationPolicyRef =
   | { readonly status: "UNCONFIGURED" }
   | { readonly status: "CONFIGURED"; readonly versionId: StableId<"policy"> };
 
+export type WorksheetView = "INTERNAL" | "EXTERNAL";
+
 export interface WorkbookSnapshot {
+  readonly externalAhs?: { readonly cells: readonly CellPresentation[]; readonly groups: readonly AhsGroup[]; readonly fields: readonly AhsField[];
+    readonly sourceFingerprints?: Readonly<Partial<Record<Profile, string>>> };
   readonly ahsGroups?: readonly AhsGroup[];
   readonly ahsFields?: readonly AhsField[];
   readonly schemaVersion: 2 | 3;

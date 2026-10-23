@@ -2,7 +2,8 @@ import type { CellInput, MappingDefinition, ProfileSnapshot, WorkbookSnapshot } 
 import { parseStableId } from "./ids.ts";
 import type { EntityKind } from "./ids.ts";
 import { parseProfile, PROFILES } from "./profiles.ts";
-import { parseDynamicWorkbook, validateDynamicReferences } from "./dynamic-validation.ts";
+import type { Profile } from "./profiles.ts";
+import { parseCellPresentation, parseDynamicWorkbook, validateDynamicReferences } from "./dynamic-validation.ts";
 
 export class DomainValidationError extends TypeError {
   readonly code = "INVALID_DOMAIN_STATE";
@@ -74,7 +75,8 @@ export function parseSnapshot(value: unknown): WorkbookSnapshot {
   const root = object(value, ["schemaVersion", "id", "projectId", "project", "analysisId", "analysis", "mappings", "selectedOfferId",
     "activeProfile", "profiles", "worksheets", "formulas", "policy", ...(version === 3 ? ["workbook"] : []),
     ...(value && Object.hasOwn(value, "ahsGroups") ? ["ahsGroups"] : []),
-    ...(value && Object.hasOwn(value, "ahsFields") ? ["ahsFields"] : [])]);
+    ...(value && Object.hasOwn(value, "ahsFields") ? ["ahsFields"] : []),
+    ...(value && Object.hasOwn(value, "externalAhs") ? ["externalAhs"] : [])]);
   requireCondition(version === 2 || version === 3, "Unsupported snapshot schema version; legacy ownership must be migrated explicitly.");
   const state = object(root.analysis, ["analysis", "vendors", "offers"]);
   const analysis = object(state.analysis, ["id", "projectId", "name"]);
@@ -85,6 +87,7 @@ export function parseSnapshot(value: unknown): WorkbookSnapshot {
   const policyStatus = choice(policyObject.status, ["CONFIGURED", "UNCONFIGURED"]);
   const snapshot: WorkbookSnapshot = {
     schemaVersion: version,
+    ...(Object.hasOwn(root, "externalAhs") ? { externalAhs: parseExternalAhs(root.externalAhs) } : {}),
     ...(Object.hasOwn(root, "ahsGroups") ? { ahsGroups: array(root.ahsGroups).map(raw => {
       const g = object(raw, ["id", "profile", "name", "builtin", "labelCellId", "items", ...(raw && Object.hasOwn(raw, "section") ? ["section"] : [])]);
       requireCondition(typeof g.builtin === "boolean", "Invalid AHS group kind.");
@@ -131,7 +134,7 @@ export function parseSnapshot(value: unknown): WorkbookSnapshot {
     profiles: { INU: parseProfileState(profiles.INU), SOLAR_BAWAH: parseProfileState(profiles.SOLAR_BAWAH) },
     worksheets: array(root.worksheets).map(value => {
       const w = object(value, ["id", "stage", "label", "tables"]);
-      return { id: parseStableId<"worksheet">(w.id), stage: choice(w.stage, ["EVALUASI_VENDOR", "KONVERSI_JAGAD", "AHS"]),
+      return { id: parseStableId<"worksheet">(w.id), stage: choice(w.stage, ["EVALUASI_VENDOR", "KONVERSI_JAGAD", "AHS", "AHS_EXTERNAL"]),
         label: text(w.label), tables: array(w.tables).map(value => {
           requireCondition(value !== null && typeof value === "object", "Expected a table object.");
           const hasMerges = Object.hasOwn(value, "merges");
@@ -216,6 +219,7 @@ function validateReferences(s: WorkbookSnapshot) {
   const allIds: readonly string[] = [s.id, s.project.id, s.analysisId, ...p.vendors.map(v => v.id), ...p.offers.map(o => o.id),
     ...p.offers.flatMap(r => r.values.map(v => v.id)),
     ...s.worksheets.map(w => w.id), ...tables.flatMap(t => [t.id, ...t.rows.map(r => r.id), ...t.columns.map(c => c.id), ...t.merges.map(m => m.id)]),
+    ...(s.externalAhs?.groups.map(g => g.id) ?? []),
     ...cells.map(c => c.id), ...s.formulas.map(f => f.id),
     ...s.mappings.map(m => m.id)];
   unique(allIds, "entity inventory");
@@ -285,7 +289,9 @@ function validateReferences(s: WorkbookSnapshot) {
   unique((s.ahsFields ?? []).map(f => f.valueCellId), "AHS fields");
   unique(ahsLabelIds, "AHS labels");
   unique([...ahsMembers, ...ahsLabelIds, ...(s.ahsFields ?? []).map(f => f.valueCellId)], "AHS cell roles");
+  const externalIds = new Set(s.worksheets.filter(w => w.stage === "AHS_EXTERNAL").flatMap(w => w.tables.flatMap(t => t.cells.map(c => c.id))));
   for (const m of s.mappings) {
+    requireCondition(!externalIds.has(m.targetCellId) && !externalIds.has(m.sourceCellId), "Mapping Eksternal tidak didukung; gunakan rumus eksplisit.");
     const source = byCell.get(m.sourceCellId);
     const target = byCell.get(m.targetCellId);
     requireCondition(m.analysisId === s.analysisId && source && target &&
@@ -293,6 +299,14 @@ function validateReferences(s: WorkbookSnapshot) {
     requireCondition(!Object.values(s.profiles).some(p => p.hppBase.cellId === m.targetCellId), "Mapping cannot replace the AHS HPP source.");
   }
   requireCondition(s.policy.status !== "CONFIGURED" || !allIds.includes(s.policy.versionId), "Policy ID is another entity kind.");
+  requireCondition(s.worksheets.filter(w => w.stage === "AHS_EXTERNAL").length <= 1, "Duplicate external AHS worksheet.");
+  requireCondition(!externalIds.size || s.externalAhs, "Metadata AHS Eksternal hilang.");
+  if (s.externalAhs) {
+    unique(s.externalAhs.cells.map(c => c.cellId), "External presentations");
+    requireCondition(s.externalAhs.cells.every(c => externalIds.has(c.cellId)), "External presentation target missing.");
+    for (const group of s.externalAhs.groups) requireCondition([...(group.labelCellId ? [group.labelCellId] : []), ...group.items.flatMap(i => [i.priceCellId, i.volumeCellId, i.totalCellId, ...(i.labelCellId ? [i.labelCellId] : [])])].every(id => externalIds.has(id) && byCell.get(id)?.scope === group.profile), "External group reference missing.");
+    for (const field of s.externalAhs.fields) requireCondition([field.labelCellId, field.valueCellId].every(id => externalIds.has(id) && byCell.get(id)?.scope === field.profile), "External field reference missing.");
+  }
   const byFormula = new Map(s.formulas.map(f => [f.id, f]));
   cells.forEach(c => {
     if (c.source.kind === "MAPPING") {
@@ -307,6 +321,7 @@ function validateReferences(s: WorkbookSnapshot) {
     f.referenceCellIds.forEach(id => {
       const ref = byCell.get(id);
       requireCondition(ref && (ref.scope === "SHARED" || ref.scope === target.scope), "Invalid or cross-profile formula reference.");
+      requireCondition(externalIds.has(target.id) || !externalIds.has(id), "Internal tidak boleh merujuk AHS Eksternal.");
     });
   }
   cells.filter(c => c.source.kind === "FORMULA").forEach(c => {
@@ -329,4 +344,37 @@ function validateReferences(s: WorkbookSnapshot) {
         formula.referenceCellIds[0] === costId, "HPP must follow the conversion cost for its own profile.");
     }
   }
+}
+
+function parseExternalAhs(value: unknown): NonNullable<WorkbookSnapshot["externalAhs"]> {
+  const data = object(value, ["cells", "groups", "fields", ...(value && Object.hasOwn(value, "sourceFingerprints") ? ["sourceFingerprints"] : [])]);
+  const cellId = (v: unknown) => parseStableId<"cell">(v);
+  const sourceFingerprints: Partial<Record<Profile, string>> = {};
+  if (Object.hasOwn(data, "sourceFingerprints")) {
+    const fingerprints = object(data.sourceFingerprints, ["INU", "SOLAR_BAWAH"].filter(p => Object.hasOwn(data.sourceFingerprints as object, p)));
+    for (const [profile, fingerprint] of Object.entries(fingerprints)) {
+      requireCondition(typeof fingerprint === "string" && /^[a-f0-9]{64}$/.test(fingerprint), "Invalid external source fingerprint.");
+      sourceFingerprints[parseProfile(profile)] = fingerprint;
+    }
+  }
+  return {
+    ...(Object.hasOwn(data, "sourceFingerprints") ? { sourceFingerprints } : {}),
+    cells: array(data.cells).map(parseCellPresentation),
+    groups: array(data.groups).map(raw => {
+      const g = object(raw, ["id", "profile", "name", "builtin", "labelCellId", "items", ...(raw && Object.hasOwn(raw, "section") ? ["section"] : [])]);
+      requireCondition(typeof g.builtin === "boolean", "Invalid external group.");
+      return { id: parseStableId<"ahs-group">(g.id), profile: parseProfile(g.profile), name: text(g.name, true), builtin: g.builtin,
+        labelCellId: g.labelCellId === null ? null : cellId(g.labelCellId),
+        ...(Object.hasOwn(g, "section") ? { section: choice(g.section, ["PENDAPATAN", "BIAYA"]) } : {}),
+        items: array(g.items).map(raw => {
+          const i = object(raw, ["name", "builtin", "labelCellId", "priceCellId", "volumeCellId", "totalCellId"]);
+          requireCondition(typeof i.builtin === "boolean", "Invalid external item.");
+          return { name: text(i.name, true), builtin: i.builtin, labelCellId: i.labelCellId === null ? null : cellId(i.labelCellId), priceCellId: cellId(i.priceCellId), volumeCellId: cellId(i.volumeCellId), totalCellId: cellId(i.totalCellId) };
+        }) };
+    }),
+    fields: array(data.fields).map(raw => {
+      const f = object(raw, ["section", "profile", "name", "labelCellId", "valueCellId", "valueType"]);
+      return { section: choice(f.section, ["INFORMASI", "LABA"]), profile: parseProfile(f.profile), name: text(f.name, true), labelCellId: cellId(f.labelCellId), valueCellId: cellId(f.valueCellId), valueType: choice(f.valueType, ["TEXT", "NUMBER", "IDR", "IDR/L", "PERCENT"]) };
+    }),
+  };
 }

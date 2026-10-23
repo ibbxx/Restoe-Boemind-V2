@@ -1,13 +1,48 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AnalysisPage } from "../src/application/contracts.ts";
-import { api, ApiError, cachedWorkbookList, invalidateSessionRequests, invalidateWorkbookLists, readWorkbookList } from "../src/ui/workbook-client.ts";
+import { api, ApiError, cachedWorkbookList, invalidateSessionRequests, invalidateWorkbookLists, prefetchWorkbookList, readWorkbookList } from "../src/ui/workbook-client.ts";
 import type { ProjectListItem } from "../src/ui/workbook-client.ts";
 
 const projectsUrl = "/api/workbook?view=projects";
 const pageUrl = (projectId = "project-1", filters = "") => `/api/workbook?view=analyses&projectId=${projectId}${filters}`;
 const projects = [{ id: "project-1", name: "Project" }];
 const page: AnalysisPage = { items: [], total: 0, periods: [], nextCursor: null, previousCursor: null };
+
+test("prefetch and click share a request, and only one speculative request runs at a time", async t => {
+  invalidateSessionRequests();
+  const response = Promise.withResolvers<Response>();
+  const requests: string[] = [];
+  t.mock.method(globalThis, "fetch", (url: string) => { requests.push(url); return response.promise; });
+  const prefetch = prefetchWorkbookList("actor-1", pageUrl()); assert(prefetch);
+  assert.equal(prefetchWorkbookList("actor-1", pageUrl("project-2")), null);
+  const click = readWorkbookList<AnalysisPage>("actor-1", pageUrl());
+  assert.equal(click.pending, prefetch);
+  assert.deepEqual(requests, [pageUrl()]);
+  response.resolve(Response.json(page)); await click.pending;
+  assert.equal(prefetchWorkbookList("actor-1", pageUrl()), null);
+  assert.equal(readWorkbookList("actor-1", pageUrl()).pending, null);
+  assert.equal(requests.length, 1);
+});
+
+test("failed prefetch allows foreground retry, and logout releases the speculative slot", async t => {
+  invalidateSessionRequests();
+  t.mock.method(globalThis, "fetch", async () => { throw new Error("offline"); });
+  const failure = prefetchWorkbookList("actor-1", pageUrl()); assert(failure);
+  await assert.rejects(failure, /Koneksi terputus/);
+  t.mock.method(globalThis, "fetch", async () => Response.json(page));
+  assert.deepEqual(await readWorkbookList("actor-1", pageUrl()).pending, page);
+  const old = Promise.withResolvers<Response>();
+  t.mock.method(globalThis, "fetch", () => old.promise);
+  const pending = prefetchWorkbookList("actor-1", pageUrl("project-2")); assert(pending);
+  invalidateSessionRequests();
+  t.mock.method(globalThis, "fetch", async () => Response.json(page));
+  const next = prefetchWorkbookList("actor-2", pageUrl()); assert(next);
+  old.resolve(Response.json(page));
+  await assert.rejects(pending, cause => cause instanceof ApiError && cause.code === "SESSION_CHANGED");
+  assert.deepEqual(await next, page);
+  assert.equal(cachedWorkbookList("actor-1", pageUrl("project-2")), undefined);
+});
 
 test("fresh lists make zero extra requests; stale lists retain their value while one refresh runs", async t => {
   invalidateSessionRequests();

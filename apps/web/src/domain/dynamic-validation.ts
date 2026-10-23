@@ -36,12 +36,7 @@ export function parseDynamicWorkbook(value: unknown): DynamicWorkbook {
         rowHeights: sizes(t.rowHeights, 800) as DynamicWorkbook["tables"][number]["rowHeights"],
         columnWidths: sizes(t.columnWidths, 1200) as DynamicWorkbook["tables"][number]["columnWidths"] };
     }),
-    cells: array(w.cells).map(raw => {
-      const c = object(raw, ["cellId", "address", "kind", "tone", "bold", "align", "unit"]);
-      requireCondition(["LABEL", "INPUT", "RESULT", "BLANK"].includes(text(c.kind)) && ["plain", "yellow", "green", "red", "gray"].includes(text(c.tone)) &&
-        ["left", "center", "right"].includes(text(c.align)) && ["text", "1", "IDR/L", "L", "IDR"].includes(text(c.unit)) && typeof c.bold === "boolean", "Invalid cell presentation.");
-      return { ...c, cellId: parseStableId<"cell">(c.cellId), address: text(c.address) } as unknown as DynamicWorkbook["cells"][number];
-    }),
+    cells: array(w.cells).map(parseCellPresentation),
     bindings: array(w.bindings).map(raw => {
       const b = object(raw, ["profile", "key", "cellId"]);
       return { profile: parseProfile(b.profile), key: text(b.key, true), cellId: parseStableId<"cell">(b.cellId) };
@@ -78,4 +73,11 @@ export function validateDynamicReferences(s: WorkbookSnapshot) {
     requireCondition(s.policy.status === "CONFIGURED" && s.policy.versionId === w.configuration.policyVersionId, "Configuration policy mismatch.");
     requireCondition(w.configuration.units.every(u => cells.has(u.cellId)) && w.configuration.aggregates.every(a => a.memberCellIds.every(id => cells.has(id))) && w.configuration.selectionDependentCellIds.every(id => cells.has(id)), "Configuration target missing.");
   }
+}
+
+export function parseCellPresentation(raw: unknown): DynamicWorkbook["cells"][number] {
+  const c = object(raw, ["cellId", "address", "kind", "tone", "bold", "align", "unit"]);
+  requireCondition(["LABEL", "INPUT", "RESULT", "BLANK"].includes(text(c.kind)) && ["plain", "yellow", "green", "red", "gray"].includes(text(c.tone)) &&
+    ["left", "center", "right"].includes(text(c.align)) && ["text", "1", "IDR/L", "L", "IDR"].includes(text(c.unit)) && typeof c.bold === "boolean", "Invalid cell presentation.");
+  return { ...c, cellId: parseStableId<"cell">(c.cellId), address: text(c.address) } as unknown as DynamicWorkbook["cells"][number];
 }

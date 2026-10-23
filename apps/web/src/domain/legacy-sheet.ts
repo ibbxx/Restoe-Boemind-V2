@@ -11,6 +11,8 @@ import { DecimalArithmetic } from "../engine/decimal.ts";
 import { OPERATIONAL_DECIMAL_POLICY, OPERATIONAL_POLICY_VERSION_ID } from "./calculation-policy.ts";
 import { ahsFieldUnit } from "./ahs-fields.ts";
 import { ahsGroups } from "./ahs-groups.ts";
+import { prepareSolarCosts } from "./solar-cost.ts";
+import { ensureVendorProfileTable } from "./vendor-profile.ts";
 
 let referenceTemplate: WorkbookSnapshot | undefined;
 
@@ -22,6 +24,8 @@ export function legacyConfiguration(s: WorkbookSnapshot, config: EngineConfigura
   return { version: config?.version ?? "legacy-sheet-precision18-v1", policyVersionId: config?.policyVersionId ?? OPERATIONAL_POLICY_VERSION_ID,
     decimal: config?.decimal ?? OPERATIONAL_DECIMAL_POLICY,
     units: cells.map(({ cell, label, column }) => {
+      const external = s.externalAhs?.cells.find(meta => meta.cellId === cell.id);
+      if (external) return { cellId: cell.id, symbol: external.unit === "text" ? "1" : external.unit, dimensions: units[external.unit] };
       if (label === "ahs-field") {
         const field = s.ahsFields?.find(f => f.valueCellId === cell.id);
         const unit = field ? ahsFieldUnit(field.valueType) : "text";
@@ -157,7 +161,7 @@ export function prepareLegacySheet(s: WorkbookSnapshot): WorkbookSnapshot {
   const worksheetFields: Record<string, string[]> = {
     EVALUASI_VENDOR: ["Pekerjaan / Material", "Customer", "Lokasi"],
     KONVERSI_JAGAD: ["Periode", "Lokasi", ...["Harga INU", "Biaya"].flatMap(column => ["Harga Dasar", "PPN", "PBBKB", "PPH", "OAT", "PPN OAT", "ALL IN"].map(row => `${column} · ${row}`)), "Gross Profit", "BPH Migas", "Net Margin", "PPH", "Profit MUE"],
-    AHS: ["Tgl Analisis (Rn)", "Sumber", "Marketing", "Lokasi", "Pembayaran", "Dokumen", "Harga Keekonomian", "Harga Include", "TOTAL PENDAPATAN", "HARGA JUAL SETELAH PAJAK", "TOTAL BIAYA", "BIAYA PER LITER", "LABA KOTOR", "SELISIH PPN", "LABA BERSIH", "LABA BERSIH PER LITER", "PERSENTASE", "Notes",
+    AHS: ["Tgl Analisis (Rn)", "Sumber", "Marketing", "Lokasi", "Pembayaran", "Dokumen", "Harga Keekonomian", "AHS_RIGHT_LABEL", "AHS_RIGHT_VALUE", "Harga Include", "TOTAL PENDAPATAN", "HARGA JUAL SETELAH PAJAK", "TOTAL BIAYA", "BIAYA PER LITER", "LABA KOTOR", "SELISIH PPN", "LABA BERSIH", "LABA BERSIH PER LITER", "PERSENTASE", "Notes",
       ...["Harga Dasar", "PBBKB", "PPN 11%"].flatMap(label => ["", " · Volume", " · Total"].map(suffix => `Harga Jual · ${label}${suffix}`)),
       ...[["HPP", "Harga Dasar", "OAT", "PBBKB", "PPH INU 0,3%", "BPH Migas 0,25%"], ["PAJAK", "PPN 11%", "PPH penjualan"], ["COST OF FUND", "Investor", "Bunga Bank", "Diskonto SKBDN"], ["OPERASIONAL", "Biaya Operasional", "Bonus Marketing"], ["ASET", "Tangki Solar"], ["KOORDINASI", "Ormas/Lainnya"], ["RELASI", "Biaya Proyek", "Biaya Mediator"], ["RESIKO", "Biaya Resiko", "Kenaikan Harga"]].flatMap(([group, ...rows]) => rows.flatMap(label => ["", " · Volume", " · Total"].map(suffix => `${group} · ${label}${suffix}`)))],
   };
@@ -179,7 +183,7 @@ export function prepareLegacySheet(s: WorkbookSnapshot): WorkbookSnapshot {
     s.worksheets.flatMap(w => w.tables.flatMap(t => t.cells)).find(c => c.id === s.profiles[profile].hppBase.cellId)!]])]));
   const seeded: { cell: CellSnapshot; address: string; profile: typeof PROFILES[number] }[] = [];
   for (const w of s.worksheets) for (const scope of w.stage === "EVALUASI_VENDOR" ? ["SHARED" as const] : PROFILES) {
-    for (const label of worksheetFields[w.stage]!) {
+    for (const label of worksheetFields[w.stage] ?? []) {
       if (w.stage === "AHS" && label === "HPP · Harga Dasar") continue;
       const existing = w.tables.flatMap(t => t.cells.filter(c => c.scope === scope && t.rows.some(r => r.id === c.rowId && r.label === label)));
       const cell = existing[0] ?? add(w.stage, scope, label, { kind: "UNSET" });
@@ -233,18 +237,18 @@ export function prepareLegacySheet(s: WorkbookSnapshot): WorkbookSnapshot {
       referenceCellIds: [...new Set(references(parseFormula(expression), () => []))] as StableId<"cell">[], activation: "ACTIVE", sourceKind: "OPERATIONAL_OVERRIDE", provenance: null });
     writers.set(item.cell.id, { kind: "FORMULA", formulaId });
   }
-  if (!additions.size && !writers.size && !removedAutomaticFormulaIds.size) return prepareLegacyAhsLabels(s.policy.status === "CONFIGURED" ? s
-    : changeWorkbook(s, { policy: { status: "CONFIGURED", versionId: id<"policy">() } }));
+  if (!additions.size && !writers.size && !removedAutomaticFormulaIds.size) return ensureVendorProfileTable(prepareSolarCosts(prepareLegacyAhsLabels(s.policy.status === "CONFIGURED" ? s
+    : changeWorkbook(s, { policy: { status: "CONFIGURED", versionId: id<"policy">() } }))));
   const worksheets = s.worksheets.map(w => ({ ...w, tables: [...w.tables, ...(additions.get(w.stage) ?? [])].map(t => ({ ...t,
     cells: t.cells.map(c => resetAutomaticPbbkb.has(c.id) ? { ...c, source: { kind: "INPUT" as const, input: { kind: "UNSET" as const } } }
       : writers.has(c.id) ? { ...c, source: writers.get(c.id)! } : c) })) }));
   const all = worksheets.flatMap(w => w.tables.flatMap(t => t.cells));
-  return prepareLegacyAhsLabels(changeWorkbook(s, { worksheets, formulas: formulas.filter(formula => !removedAutomaticFormulaIds.has(formula.id)),
+  return ensureVendorProfileTable(prepareSolarCosts(prepareLegacyAhsLabels(changeWorkbook(s, { worksheets, formulas: formulas.filter(formula => !removedAutomaticFormulaIds.has(formula.id)),
     policy: s.policy.status === "CONFIGURED" ? s.policy : { status: "CONFIGURED", versionId: id<"policy">() },
     profiles: Object.fromEntries(PROFILES.map(profile => [profile, {
     ...s.profiles[profile], cellIds: all.filter(c => c.scope === profile).map(c => c.id),
     formulaIds: formulas.filter(f => !removedAutomaticFormulaIds.has(f.id) && all.some(c => c.id === f.targetCellId && c.scope === profile)).map(f => f.id),
-  }])) as unknown as WorkbookSnapshot["profiles"] }));
+  }])) as unknown as WorkbookSnapshot["profiles"] }))));
 }
 
 function prepareLegacyAhsLabels(s: WorkbookSnapshot): WorkbookSnapshot {

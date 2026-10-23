@@ -10,6 +10,8 @@ import { PROFILES } from "./profiles.ts";
 import { addColumn, addRow } from "./structure.ts";
 import { vendorComponents, vendorComponentRoles, includeNewVendorComponentTotals } from "./vendor-components.ts";
 import { validateAhsVolumeInput } from "./ahs-volume.ts";
+import { prepareSolarCosts, requireSolarCostEditable } from "./solar-cost.ts";
+import { ensureVendorProfileTable, isVendorProfileTable } from "./vendor-profile.ts";
 
 export function reconcilePresentation(s: WorkbookSnapshot): WorkbookSnapshot {
   if (!s.workbook) return s;
@@ -50,7 +52,7 @@ export function addSheetVendor(snapshot: WorkbookSnapshot, name: string, pattern
   requireCondition(name.trim() && snapshot.workbook, "Nama vendor wajib diisi.");
   let s = snapshot;
   const profile = "SHARED" as const;
-  const tableId = s.worksheets.find(w => w.stage === "EVALUASI_VENDOR")!.tables[0]!.id;
+  const tableId = s.worksheets.find(w => w.stage === "EVALUASI_VENDOR")!.tables.find(table => !isVendorProfileTable(table))!.id;
   let table = s.worksheets.flatMap(w => w.tables).find(t => t.id === tableId)!;
   requireCondition(!targetColumnId || (table.columnOrder.slice(1).includes(targetColumnId) && !s.workbook!.offers.some(o => o.columnId === targetColumnId)), "Kolom vendor tidak tersedia.");
   let columnId = targetColumnId ?? table.columnOrder.slice(1).find(c => !s.workbook!.offers.some(o => o.columnId === c));
@@ -128,10 +130,10 @@ export function addSheetVendor(snapshot: WorkbookSnapshot, name: string, pattern
   const worksheets = s.worksheets.map(w => ({ ...w, tables: w.tables.map(t => t.id === tableId ? { ...t, cells } : t) }));
   const presentations = s.workbook!.cells.map(p => newPresentations.get(p.cellId) ?? p);
   const configuration = s.workbook!.configuration;
-  return includeNewVendorComponentTotals(changeWorkbook(s, { worksheets, formulas, analysis: { ...s.analysis,
+  return ensureVendorProfileTable(includeNewVendorComponentTotals(changeWorkbook(s, { worksheets, formulas, analysis: { ...s.analysis,
     vendors: [...s.analysis.vendors, { id: vendorId, analysisId: s.analysisId, name: name.trim() }],
     offers: [...s.analysis.offers, { id: offerId, analysisId: s.analysisId, vendorId, label: name.trim(), values }] },
-    workbook: { ...s.workbook!, cells: presentations, offers: [...s.workbook!.offers, { columnId, baseCellId: resolve(actualColumn + "10"), nameCellId: resolve(actualColumn + "9"), offerId, pattern }], configuration: configuration ? { ...configuration, version: id<"policy">(), units: presentations.map(p => ({ cellId: p.cellId, symbol: p.unit === "text" ? "1" : p.unit, dimensions: units[p.unit] })) } : null } }), offerId);
+    workbook: { ...s.workbook!, cells: presentations, offers: [...s.workbook!.offers, { columnId, baseCellId: resolve(actualColumn + "10"), nameCellId: resolve(actualColumn + "9"), offerId, pattern }], configuration: configuration ? { ...configuration, version: id<"policy">(), units: presentations.map(p => ({ cellId: p.cellId, symbol: p.unit === "text" ? "1" : p.unit, dimensions: units[p.unit] })) } : null } }), offerId));
 }
 
 export function removeSheetVendor(snapshot: WorkbookSnapshot, offerId: StableId<"offer">) {
@@ -140,10 +142,11 @@ export function removeSheetVendor(snapshot: WorkbookSnapshot, offerId: StableId<
   requireCondition(offer, "Vendor tidak ditemukan.");
   const workbookOffer = snapshot.workbook?.offers.find(item => item.offerId === offerId);
   requireCondition(!snapshot.workbook || workbookOffer, "Vendor workbook tidak ditemukan.");
-  const vendorTable = snapshot.worksheets.find(w => w.stage === "EVALUASI_VENDOR")?.tables[0];
+  const vendorTable = snapshot.worksheets.find(w => w.stage === "EVALUASI_VENDOR")?.tables.find(table => !isVendorProfileTable(table));
   requireCondition(vendorTable, "Tabel evaluasi vendor tidak ditemukan.");
+  const removedColumnLabel = vendorTable!.columns.find(column => column.id === workbookOffer?.columnId)?.label;
   const removedCells = new Set(snapshot.worksheets.filter(w => w.stage === "EVALUASI_VENDOR").flatMap(w => w.tables.flatMap(table => table.cells.filter(cell => snapshot.workbook
-    ? cell.columnId === workbookOffer!.columnId
+    ? cell.columnId === workbookOffer!.columnId || (isVendorProfileTable(table) && table.columns.find(column => column.id === cell.columnId)?.label === removedColumnLabel)
     : (table.rows.find(row => row.id === cell.rowId)?.label ?? "").includes(`|vendor:${offerId}:`)).map(cell => cell.id))));
   // Shared project metadata belongs to the sheet even when its vendor column is removed.
   const relocated = new Map<StableId<"cell">, StableId<"column">>();
@@ -157,8 +160,8 @@ export function removeSheetVendor(snapshot: WorkbookSnapshot, offerId: StableId<
   requireCondition(!snapshot.workbook?.configuration?.aggregates.some(aggregate => aggregate.memberCellIds.some(cellId => removedCells.has(cellId))), "Vendor masih dipakai agregat perhitungan.");
   const removedMappings = new Set(snapshot.mappings.filter(mapping => removedCells.has(mapping.sourceCellId) || removedCells.has(mapping.targetCellId)).map(mapping => mapping.id));
   const tables = snapshot.worksheets.map(worksheet => ({ ...worksheet, tables: worksheet.tables.map(table => ({
-    ...table, columns: table.columns.filter(column => column.id !== workbookOffer?.columnId),
-    columnOrder: table.columnOrder.filter(columnId => columnId !== workbookOffer?.columnId),
+    ...table, columns: table.columns.filter(column => column.id !== workbookOffer?.columnId && !(isVendorProfileTable(table) && column.label === removedColumnLabel)),
+    columnOrder: table.columnOrder.filter(columnId => columnId !== workbookOffer?.columnId && !(isVendorProfileTable(table) && table.columns.find(column => column.id === columnId)?.label === removedColumnLabel)),
     cells: table.cells.filter(cell => !removedCells.has(cell.id)).map(cell => {
       const retained = relocated.has(cell.id) ? { ...cell, columnId: relocated.get(cell.id)! } : cell;
       return retained.source.kind === "MAPPING" && removedMappings.has(retained.source.mappingId)
@@ -176,11 +179,12 @@ export function removeSheetVendor(snapshot: WorkbookSnapshot, offerId: StableId<
   const removedOfferIds = new Set(snapshot.analysis.offers.filter(activeOffer => activeOffer.id === offerId).map(activeOffer => activeOffer.id));
   const selectedId = snapshot.selectedOfferId && removedOfferIds.has(snapshot.selectedOfferId)
     ? null : snapshot.selectedOfferId;
+  const profileTable = snapshot.worksheets.find(w => w.stage === "EVALUASI_VENDOR")?.tables.find(isVendorProfileTable);
   const workbook = snapshot.workbook ? {
     ...snapshot.workbook,
     cells: snapshot.workbook.cells.filter(cell => !removedCells.has(cell.cellId)),
     tables: snapshot.workbook.tables.map(table => table.tableId !== vendorTable!.id ? table : {
-      ...table, columnWidths: table.columnWidths.filter(column => column.id !== workbookOffer!.columnId),
+      ...table, columnWidths: table.columnWidths.filter(column => column.id !== workbookOffer!.columnId && !(table.tableId === profileTable?.id && column.id === profileTable.columns.find(item => item.label === removedColumnLabel)?.id)),
     }),
     offers: snapshot.workbook.offers.filter(item => item.offerId !== offerId),
     selections: { INU: snapshot.workbook.selections.INU && removedOfferIds.has(snapshot.workbook.selections.INU) ? null : snapshot.workbook.selections.INU,
@@ -205,7 +209,8 @@ export function removeSheetVendor(snapshot: WorkbookSnapshot, offerId: StableId<
 
 export function prepareVendorColumns(s: WorkbookSnapshot): WorkbookSnapshot {
   if (!s.workbook) return s;
-  const table = s.worksheets.find(w => w.stage === "EVALUASI_VENDOR")?.tables[0];
+  s = ensureVendorProfileTable(s);
+  const table = s.worksheets.find(w => w.stage === "EVALUASI_VENDOR")?.tables.find(item => !isVendorProfileTable(item));
   if (!table) return s;
   let next = s;
   for (const [index, columnId] of table.columnOrder.slice(1).entries()) {
@@ -234,6 +239,7 @@ export function prepareVendorColumns(s: WorkbookSnapshot): WorkbookSnapshot {
 
 export function editSheetInput(s: WorkbookSnapshot, cell: CellSnapshot, input: CellInput) {
   requireCondition(s.workbook && cell.source.kind === "INPUT", "Sel bukan input.");
+  requireSolarCostEditable(s, cell);
   validateAhsVolumeInput(s, cell, input);
   const meta = s.workbook.cells.find(p => p.cellId === cell.id);
   requireCondition(!meta || meta.kind !== "RESULT", "Sel ini dihitung atau dikelola sistem.");
@@ -336,7 +342,7 @@ export function selectSheetOffer(s: WorkbookSnapshot, selectionId: StableId<"off
   const obsolete = new Set(mappings.filter(mapping => mapping.scope === profile && mapping.sourceComponent.startsWith("vendor-live:") && !writers.has(mapping.targetCellId)).map(mapping => mapping.id));
   const formulas = s.formulas.filter(formula => !writers.has(formula.targetCellId));
   const retainedFormulaIds = new Set(formulas.map(formula => formula.id));
-  return changeWorkbook(s, { selectedOfferId: profile === s.activeProfile ? selectionId : s.selectedOfferId, mappings: mappings.filter(mapping => !obsolete.has(mapping.id)), formulas,
+  return prepareSolarCosts(changeWorkbook(s, { selectedOfferId: profile === s.activeProfile ? selectionId : s.selectedOfferId, mappings: mappings.filter(mapping => !obsolete.has(mapping.id)), formulas,
     profiles: { ...s.profiles, [profile]: { ...s.profiles[profile], formulaIds: s.profiles[profile].formulaIds.filter(id => retainedFormulaIds.has(id)) } },
     worksheets: s.worksheets.map(w => ({ ...w, tables: w.tables.map(t => {
       const total = t.cells.find(c => c.scope === profile && s.workbook?.cells.some(p => p.cellId === c.id && p.address === `C${36 - offset}`));
@@ -345,7 +351,7 @@ export function selectSheetOffer(s: WorkbookSnapshot, selectionId: StableId<"off
       return { ...t, rowOrder, cells: t.cells.map(c => writers.has(c.id) ? { ...c, source: writers.get(c.id)! }
         : c.source.kind === "MAPPING" && obsolete.has(c.source.mappingId) ? { ...c, source: { kind: "INPUT" as const, input: { kind: "UNSET" as const } } } : c) };
     }) })),
-    ...(s.workbook ? { workbook: { ...s.workbook, selections: { ...s.workbook.selections, [profile]: selectionId } } } : {}) });
+    ...(s.workbook ? { workbook: { ...s.workbook, selections: { ...s.workbook.selections, [profile]: selectionId } } } : {}) }));
 }
 
 // Rebuild source links from current vendor columns, preserving manual vendor choices.
@@ -357,7 +363,7 @@ export function prepareSelectedVendorMappings(s: WorkbookSnapshot, actorId: Stab
       s = selectSheetOffer(s, selectionId, actorId, profile);
     }
   }
-  return s;
+  return prepareSolarCosts(s);
 }
 
 function prepareProjectLocation(s: WorkbookSnapshot, actorId: StableId<"user">) {

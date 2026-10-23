@@ -208,3 +208,25 @@ test("a second print cannot overwrite the title of an open print dialog", async 
   env.closeDialog();
   assert.equal(env.doc.title, "Dynamic Procurement Workbook");
 });
+
+test("external prints AHS once without vendor selection or conversion tables", async t => {
+  const env = printEnvironment(t);
+  const ahs = fixture(1);
+  const original = JSON.stringify(ahs);
+  const sheet = {
+    querySelector: () => null,
+    querySelectorAll: (selector: string) => selector === ".ahs-sheet" ? [dom(ahs)] : [],
+  } as unknown as HTMLElement;
+  await printWorkbook(sheet, [], "AHS Eksternal", "EXTERNAL");
+  assert.equal(env.printCalls(), 1);
+  const host = env.doc.body.children[0]!;
+  assert.equal(host.children.length, 1);
+  const report = host.children[0]!.children[0]!;
+  assert.equal(report.className, "workbook-print-report workbook-print-external");
+  assert.equal(report.children.length, 1);
+  assert.equal(report.children[0]!.className, "print-table print-ahs");
+  assert.equal(JSON.stringify(ahs), original);
+  env.closeDialog();
+  assert.equal(env.doc.body.children.length, 0);
+  await assert.rejects(printWorkbook(sheet, [], "Internal", "INTERNAL"), /belum lengkap/);
+});

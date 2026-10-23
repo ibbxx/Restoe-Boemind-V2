@@ -11,6 +11,8 @@ import type { EngineConfiguration, Unit } from "../engine/contracts.ts";
 import { requireCondition } from "./validation.ts";
 import { canonicalJson } from "./snapshots.ts";
 import { OPERATIONAL_DECIMAL_POLICY, OPERATIONAL_POLICY_VERSION_ID } from "./calculation-policy.ts";
+import { prepareSolarCosts } from "./solar-cost.ts";
+import { ensureVendorProfileTable } from "./vendor-profile.ts";
 
 export const units: Record<CellPresentation["unit"], Unit> = { text: {}, "1": {}, "IDR/L": { money: 1, volume: -1 }, L: { volume: 1 }, IDR: { money: 1 } };
 export const cellsOf = (s: WorkbookSnapshot) => s.worksheets.flatMap(w => w.tables.flatMap(t => t.cells));
@@ -174,7 +176,7 @@ export function createProcurementWorkbook(projectName: string, analysisName: str
     cellIds: worksheets.flatMap(w => w.tables.flatMap(t => t.cells)).filter(c => c.scope === profile).map(c => c.id),
     formulaIds: formulas.filter(f => worksheets.flatMap(w => w.tables.flatMap(t => t.cells)).find(c => c.id === f.targetCellId)?.scope === profile).map(f => f.id),
   }])) as unknown as WorkbookSnapshot["profiles"] });
-  return prepareNumericBlanks(configureTemplate(snapshot, OPERATIONAL_DECIMAL_POLICY, null));
+  return ensureVendorProfileTable(prepareSolarCosts(prepareNumericBlanks(configureTemplate(snapshot, OPERATIONAL_DECIMAL_POLICY, null))));
 }
 
 export function configureTemplate(s: WorkbookSnapshot, decimal: DecimalPolicy, solver: DynamicWorkbook["solver"]) {

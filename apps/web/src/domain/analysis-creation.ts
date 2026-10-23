@@ -55,6 +55,7 @@ export function createAnalysisWorkbook(input: AnalysisCreationInput): WorkbookSn
   requireCondition(period !== "", "Tanggal analisis tidak valid.");
 
   const headers: Record<WorksheetSnapshot["stage"], Record<string, string>> = {
+    AHS_EXTERNAL: {},
     EVALUASI_VENDOR: { "Pekerjaan / Material": material, Customer: customer, Lokasi: location },
     KONVERSI_JAGAD: { Periode: period, Lokasi: location },
     AHS: {

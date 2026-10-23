@@ -3,6 +3,7 @@ import { createStableId, parseStableId } from "./ids.ts";
 import type { Profile } from "./profiles.ts";
 import { captureSnapshot } from "./snapshots.ts";
 import { validateAhsVolumeInput } from "./ahs-volume.ts";
+import { requireSolarCostEditable } from "./solar-cost.ts";
 import { parseCellInput, parseSnapshot, requireCondition } from "./validation.ts";
 
 function nextSnapshot(snapshot: WorkbookSnapshot, changes: Partial<WorkbookSnapshot>) {
@@ -25,6 +26,7 @@ export function updateCellInput(value: unknown, scope: Profile | "SHARED", cellI
   const cell = s.worksheets.flatMap(w => w.tables).flatMap(t => t.cells).find(c => c.id === id);
   requireCondition(cell?.scope === scope && cell.source.kind === "INPUT", "Cell is missing, calculated, or outside the requested scope.");
   const validatedInput = parseCellInput(input);
+  requireSolarCostEditable(s, cell);
   validateAhsVolumeInput(s, cell, validatedInput);
   return nextSnapshot(s, { worksheets: s.worksheets.map(w => ({ ...w, tables: w.tables.map(t => ({ ...t,
     cells: t.cells.map(c => c.id === id ? { ...c, source: { kind: "INPUT", input: validatedInput } } : c),

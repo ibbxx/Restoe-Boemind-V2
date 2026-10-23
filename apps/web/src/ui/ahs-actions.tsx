@@ -3,12 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { Ref } from "react";
 import { MenuToggleIcon } from "../components/ui/menu-toggle-icon.tsx";
-import type { AhsSection, AhsValueType, WorkbookSnapshot } from "../domain/contracts.ts";
+import type { AhsSection, WorkbookSnapshot } from "../domain/contracts.ts";
 import type { EngineConfiguration, NodeResult } from "../engine/contracts.ts";
 import { addAhsField, ahsFields, removeAhsField, renameAhsField } from "../domain/ahs-fields.ts";
 import { addAhsItem, ahsGroups, ahsLabel, removeAhsEntry, renameAhsEntry } from "../domain/ahs-groups.ts";
 
-interface Props {
+interface CommonProps {
   snapshot: WorkbookSnapshot;
   section: AhsSection;
   sections?: readonly AhsSection[];
@@ -16,16 +16,20 @@ interface Props {
   results?: readonly NodeResult[];
   disabled: boolean;
   error: string;
-  onApply: (action: () => WorkbookSnapshot) => boolean;
   addButtonRef: Ref<HTMLButtonElement>;
+  onBeforeOpen?: () => boolean;
 }
+type Props = CommonProps & (
+  { view?: "INTERNAL"; onApply: (action: () => WorkbookSnapshot) => boolean; onAdd?: never } |
+  { view: "EXTERNAL"; onApply?: never; onAdd: (section: AhsSection, groupId: string | null, groupName: string, itemName: string) => boolean }
+);
 
 const titles = { group: "Tambah kelompok", item: "Tambah uraian", rename: "Ubah nama", remove: "Hapus" };
 type Action = keyof typeof titles;
 
 const sectionLabels: Record<AhsSection, string> = { INFORMASI: "Informasi Analisis", PENDAPATAN: "Pendapatan", BIAYA: "Biaya", LABA: "Laba" };
 
-export function AhsActions({ snapshot, section, sections = [section], configuration, results = [], disabled, error, onApply, addButtonRef }: Props) {
+export function AhsActions({ snapshot, section, sections = [section], configuration, results = [], disabled, error, onApply, onAdd, view = "INTERNAL", onBeforeOpen, addButtonRef }: Props) {
   const menuRef = useRef<HTMLDetailsElement>(null), dialogRef = useRef<HTMLDialogElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [activeSection, setActiveSection] = useState<AhsSection>(section);
@@ -33,13 +37,13 @@ export function AhsActions({ snapshot, section, sections = [section], configurat
   const [groupId, setGroupId] = useState(""), [itemId, setItemId] = useState("");
   const [name, setName] = useState(""), [firstItem, setFirstItem] = useState("");
   const grouped = activeSection === "BIAYA" || activeSection === "PENDAPATAN";
-  const groups = grouped ? ahsGroups(snapshot, snapshot.activeProfile, activeSection) : [];
-  const fields = !grouped ? ahsFields(snapshot, activeSection) : [];
+  const groups = grouped ? view === "EXTERNAL" ? snapshot.externalAhs?.groups.filter(group => group.profile === snapshot.activeProfile && (group.section ?? "BIAYA") === activeSection) ?? [] : ahsGroups(snapshot, snapshot.activeProfile, activeSection) : [];
+  const fields = !grouped ? view === "EXTERNAL" ? snapshot.externalAhs?.fields.filter(field => field.profile === snapshot.activeProfile && field.section === activeSection) ?? [] : ahsFields(snapshot, activeSection) : [];
   const field = fields.find(f => f.valueCellId === itemId);
   const group = groups.find(g => g.id === groupId);
-  const [valueType, setValueType] = useState<AhsValueType>(activeSection === "INFORMASI" ? "TEXT" : "NUMBER");
   const sectionName = sectionLabels[activeSection];
-  const titleId = `ahs-${activeSection}-action-title`;
+  const titleId = `ahs-${view === "EXTERNAL" ? "external-" : ""}${activeSection}-action-title`;
+  const menuLabel = view === "EXTERNAL" ? "Aksi AHS Eksternal" : "Aksi AHS";
   const item = group?.items.find(item => item.priceCellId === itemId);
   const manage = action === "rename" || action === "remove";
   const removable = groups.filter(g => !g.builtin || g.items.some(item => !item.builtin));
@@ -56,10 +60,10 @@ export function AhsActions({ snapshot, section, sections = [section], configurat
   }, []);
 
   function open(next: Action) {
+    if (disabled || (onBeforeOpen && !onBeforeOpen())) return;
     const initial = (next === "remove" ? removable : groups)[0];
     const initialItem = next === "remove" && initial?.builtin ? initial.items.find(item => !item.builtin) : undefined;
     setAction(next); setGroupId(initial?.id ?? ""); setItemId(grouped ? initialItem?.priceCellId ?? "" : fields[0]?.valueCellId ?? "");
-    setValueType(activeSection === "INFORMASI" ? "TEXT" : "NUMBER");
     setName(!grouped ? fields[0] ? labelOf(fields[0]) : "" : next === "group" ? "" : initialItem ? labelOf(initialItem) : initial ? labelOf(initial) : ""); setFirstItem("");
     if (menuRef.current) menuRef.current.open = false;
     dialogRef.current?.showModal();
@@ -83,17 +87,17 @@ export function AhsActions({ snapshot, section, sections = [section], configurat
         buttons[event.key === "Home" ? 0 : event.key === "End" || (current < 0 && event.key === "ArrowUp") ? buttons.length - 1
           : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length]?.focus();
       }}>
-      <summary aria-label="Aksi AHS" aria-haspopup="menu" title="Aksi AHS">
+      <summary aria-label={menuLabel} aria-haspopup="menu" title={menuLabel}>
         <MenuToggleIcon open={menuOpen} duration={500} aria-hidden="true" />
       </summary>
-      <div role="menu" aria-label="Aksi AHS">
+      <div role="menu" aria-label={menuLabel}>
         <div className="ahs-menu-heading"><span>Kelola AHS</span><strong>{sectionName}</strong></div>
         <div className="ahs-section-picker" role="group" aria-label="Bagian AHS">
           {sections.map(candidate => <button key={candidate} type="button" role="menuitemradio" aria-checked={activeSection === candidate}
             className={"ahs-section-" + candidate.toLowerCase() + (activeSection === candidate ? " is-active" : "")} onClick={() => setActiveSection(candidate)}>{sectionLabels[candidate]}</button>)}
         </div>
         <div className="ahs-action-list" role="group" aria-label={`Aksi ${sectionName}`}>
-          {(Object.keys(titles) as Action[]).filter(key => grouped || key !== "group").map(key => <button key={key} ref={key === "item" ? addButtonRef : undefined} type="button" role="menuitem"
+          {(Object.keys(titles) as Action[]).filter(key => (grouped || key !== "group") && (view !== "EXTERNAL" || key === "group" || key === "item")).map(key => <button key={key} ref={key === "item" ? addButtonRef : undefined} type="button" role="menuitem"
             disabled={disabled || ((key === "rename" || key === "remove") && !(grouped ? (key === "remove" ? removable : groups).length : fields.length)) || (key === "remove" && !configuration)}
             className={key === "remove" ? "menu-danger" : undefined} onClick={() => open(key)}>{titles[key]}</button>)}
         </div>
@@ -104,9 +108,13 @@ export function AhsActions({ snapshot, section, sections = [section], configurat
       <form onSubmit={event => {
         event.preventDefault();
         if (disabled || (manage && !targetAllowed)) return;
-        if (onApply(() => {
+        if (view === "EXTERNAL") {
+          if (onAdd!(activeSection, grouped && action === "item" ? groupId : null, action === "group" ? name : "", firstItem)) dialogRef.current?.close();
+          return;
+        }
+        if (onApply!(() => {
           if (!grouped) {
-            if (action === "item") return addAhsField(snapshot, activeSection, firstItem, activeSection === "LABA" ? "NUMBER" : valueType);
+            if (action === "item") return addAhsField(snapshot, activeSection, firstItem, activeSection === "LABA" ? "NUMBER" : "TEXT");
             if (action === "rename") return renameAhsField(snapshot, itemId, name);
             return removeAhsField(snapshot, itemId, configuration!);
           }
@@ -132,11 +140,6 @@ export function AhsActions({ snapshot, section, sections = [section], configurat
           setItemId(event.target.value); const selected = fields.find(f => f.valueCellId === event.target.value);
           setName(selected ? labelOf(selected) : "");
         }}>{fields.map(f => <option key={f.valueCellId} value={f.valueCellId}>{labelOf(f)}</option>)}</select></label>}
-        {!grouped && activeSection !== "LABA" && action === "item" && <label>Jenis nilai<select value={valueType} onChange={event => setValueType(event.target.value as AhsValueType)}>
-          {(activeSection === "INFORMASI" ? [["TEXT", "Teks"], ["NUMBER", "Angka"]] : [["IDR", "Rp"], ["IDR/L", "Rp/liter"], ["PERCENT", "Persen"], ["NUMBER", "Angka"]])
-            .map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-        </select></label>}
-        {!grouped && activeSection !== "LABA" && action === "item" && valueType === "PERCENT" && <p>Masukkan 0,1 atau =10% untuk menampilkan 10%.</p>}
         {(action === "group" || action === "rename") && <label>{action === "group" ? "Nama kelompok" : "Nama baru"}
           <input value={name} onChange={event => setName(event.target.value)} required /></label>}
         {(action === "group" || action === "item") && <label>Nama uraian<input value={firstItem} onChange={event => setFirstItem(event.target.value)} required /></label>}

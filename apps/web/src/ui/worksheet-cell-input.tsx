@@ -18,7 +18,7 @@ export function WorksheetCellInput({ label, raw, shown, selected, editing, expre
   return <>
     <input className="sheet-input" aria-label={label} aria-invalid={invalid}
       data-token-preview={showPreview ? "true" : undefined}
-      data-invalid={invalid ? "true" : "false"} disabled={disabled} inputMode="text"
+      data-invalid={invalid ? "true" : "false"} data-raw={raw} disabled={disabled} inputMode="text"
       value={selected && (focused || editing || invalid) ? expression : shown}
       onFocus={event => {
         onFocusInput(event.currentTarget);

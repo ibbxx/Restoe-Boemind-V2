@@ -2,7 +2,7 @@ function copyTable(source: HTMLTableElement, kind: string): HTMLTableElement {
   const table = source.cloneNode(true) as HTMLTableElement;
   table.className = `print-table print-${kind}`;
   table.removeAttribute("style");
-  table.querySelectorAll(".vendor-table-actions, .cell-formula-preview, dialog").forEach(element => element.remove());
+  table.querySelectorAll(".vendor-table-actions, .vendor-aspects-toggle, .cell-formula-preview, dialog").forEach(element => element.remove());
   table.querySelectorAll("input, select").forEach(element => element.remove());
   table.querySelectorAll("button").forEach(button => button.replaceWith(document.createTextNode(button.textContent ?? "")));
   table.querySelectorAll("[style], [tabindex], [title], [data-cell-id], [data-cell-code]").forEach(element => {
@@ -52,12 +52,13 @@ export function vendorTables(source: HTMLTableElement, columnIndexes: readonly n
   return tables;
 }
 
-export async function printWorkbook(sheet: HTMLElement, vendorColumnIndexes: readonly number[], title: string): Promise<void> {
+export async function printWorkbook(sheet: HTMLElement, vendorColumnIndexes: readonly number[], title: string, view: "INTERNAL" | "EXTERNAL" = "INTERNAL"): Promise<void> {
   if (document.querySelector(".workbook-print-host")) return;
-  const vendor = sheet.querySelector<HTMLTableElement>(".vendor-sheet");
+  const vendor = sheet.querySelector<HTMLTableElement>(".vendor-sheet:not(.vendor-profile-sheet)");
+  const profileTables = Array.from(sheet.querySelectorAll<HTMLTableElement>(".vendor-profile-sheet")).filter(table => table.className.split(/\s+/).includes("vendor-profile-sheet"));
   const conversion = Array.from(sheet.querySelectorAll<HTMLTableElement>(".conversion-sheet"));
   const ahs = Array.from(sheet.querySelectorAll<HTMLTableElement>(".ahs-sheet"));
-  if (!vendor || !conversion.length || !ahs.length) throw new Error("Tabel laporan cetak belum lengkap.");
+  if (!ahs.length || (view === "INTERNAL" && (!vendor || !conversion.length))) throw new Error("Tabel laporan cetak belum lengkap.");
   const host = document.createElement("div");
   host.className = "workbook-print-host";
   host.setAttribute("aria-hidden", "true");
@@ -67,12 +68,18 @@ export async function printWorkbook(sheet: HTMLElement, vendorColumnIndexes: rea
     if (previousTitle !== undefined) { document.title = previousTitle; previousTitle = undefined; }
   };
   try {
-    const vendors = vendorTables(vendor, vendorColumnIndexes);
-    for (const table of vendors) {
+    if (view === "EXTERNAL") {
+      const page = document.createElement("div"), report = document.createElement("div");
+      page.className = "workbook-print-page"; report.className = "workbook-print-report workbook-print-external";
+      report.append(...ahs.map(table => copyTable(table, "ahs"))); page.append(report); host.append(page);
+    }
+    const vendors = view === "INTERNAL" ? vendorTables(vendor!, vendorColumnIndexes) : [];
+    const profilePages = profileTables.map(profile => vendorTables(profile, vendorColumnIndexes));
+    for (const [pageIndex, table] of vendors.entries()) {
       const page = document.createElement("div"), report = document.createElement("div"), left = document.createElement("div"), right = document.createElement("div");
       page.className = "workbook-print-page"; report.className = "workbook-print-report";
       left.className = "print-left"; right.className = "print-right";
-      left.append(table, ...conversion.map(table => copyTable(table, "conversion")));
+      left.append(table, ...profilePages.flatMap(pages => pages[pageIndex] ? [pages[pageIndex]!] : []), ...conversion.map(table => copyTable(table, "conversion")));
       right.append(...ahs.map(table => copyTable(table, "ahs")));
       report.append(left, right); page.append(report); host.append(page);
     }

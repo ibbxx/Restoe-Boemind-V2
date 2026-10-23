@@ -46,6 +46,25 @@ export interface GridCell {
   readonly colSpan: number;
 }
 
+// Hidden rows must also be removed from rowspans, otherwise the following group shifts columns.
+export function visibleSheetTable(table: TableSnapshot, hiddenRows: ReadonlySet<string>): TableSnapshot {
+  if (!hiddenRows.size) return table;
+  return {
+    ...table,
+    rows: table.rows.filter(row => !hiddenRows.has(row.id)),
+    rowOrder: table.rowOrder.filter(rowId => !hiddenRows.has(rowId)),
+    cells: table.cells.filter(cell => !hiddenRows.has(cell.rowId)),
+    merges: table.merges.flatMap(merge => {
+      const anchor = table.cells.find(cell => cell.id === merge.anchorCellId);
+      requireCondition(anchor, "Merge anchor is not a cell of this table.");
+      if (hiddenRows.has(anchor.rowId)) return [];
+      const start = table.rowOrder.indexOf(anchor.rowId);
+      const rowSpan = table.rowOrder.slice(start, start + merge.rowSpan).filter(rowId => !hiddenRows.has(rowId)).length;
+      return [{ ...merge, rowSpan }];
+    }),
+  };
+}
+
 // A visual-only merge keeps every covered cell by ID; covered positions render as null
 // (skipped), the anchor carries the span. Sparse gaps keep a table position.
 export function buildSheetGrid(table: TableSnapshot): readonly (readonly (GridCell | null)[])[] {

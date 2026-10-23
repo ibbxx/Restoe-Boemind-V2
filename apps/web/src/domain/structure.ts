@@ -7,6 +7,7 @@ import { requireCondition, parseSnapshot, parseCellInput } from "./validation.ts
 import { changeWorkbook } from "./workflow.ts";
 import { parseFormula, references } from "../engine/parser.ts";
 import { isAhsVolumeCell, requireAhsVolumeEditable, validateAhsVolumeInput } from "./ahs-volume.ts";
+import { requireSolarCostEditable } from "./solar-cost.ts";
 
 // Structural commands stay pure domain transitions: every call returns a new,
 // validated snapshot via `changeWorkbook`, never a mutated one.
@@ -200,9 +201,10 @@ export function setCellFormula(snapshot: unknown, cellId: unknown, expression: s
   const target = parseStableId<"cell">(cellId);
   const cell = findCell(s, target);
   requireCondition(cell, "Sel tidak ditemukan.");
+  requireSolarCostEditable(s, cell);
   requireAhsVolumeEditable(s, cell);
   const vendorCell = s.worksheets.some(w => w.stage === "EVALUASI_VENDOR" && w.tables.some(t => t.id === cell.tableId));
-  const ahsCell = s.worksheets.some(w => w.stage === "AHS" && w.tables.some(t => t.id === cell.tableId));
+  const ahsCell = s.worksheets.some(w => (w.stage === "AHS" || w.stage === "AHS_EXTERNAL") && w.tables.some(t => t.id === cell.tableId));
   requireCondition(vendorCell || ahsCell || !s.workbook?.cells.some(p => p.cellId === target && (p.kind === "LABEL" || (p.kind === "RESULT" && cell.source.kind !== "FORMULA"))),
     "Sel label atau hasil tidak boleh ditimpa formula.");
   requireCondition(!s.workbook?.bindings.some(b => b.cellId === target && ["cost", "supplier", "supplierName"].includes(b.key)), "Sel ini dikelola pilihan vendor atau solver.");
@@ -212,7 +214,9 @@ export function setCellFormula(snapshot: unknown, cellId: unknown, expression: s
   const referenceCellIds = [...new Set(references(parseFormula(expression), () => {
     throw new TypeError("Gunakan referensi sel langsung.");
   }))] as StableId<"cell">[];
+  const externalIds = new Set(s.worksheets.filter(w => w.stage === "AHS_EXTERNAL").flatMap(w => w.tables.flatMap(t => t.cells.map(c => c.id))));
   for (const reference of referenceCellIds) {
+    requireCondition(externalIds.has(target) || !externalIds.has(reference), "Internal tidak boleh merujuk AHS Eksternal.");
     const resolved = findCell(s, reference);
     requireCondition(resolved && (resolved.scope === "SHARED" || resolved.scope === cell.scope),
       "Referensi formula harus ada dan berada pada scope profil yang sama atau SHARED.");
@@ -251,10 +255,11 @@ export function setCellInput(snapshot: unknown, cellId: unknown, value: CellInpu
   const target = parseStableId<"cell">(cellId);
   const cell = findCell(s, target);
   requireCondition(cell, "Sel tidak ditemukan.");
+  requireSolarCostEditable(s, cell);
   requireAhsVolumeEditable(s, cell);
   validateAhsVolumeInput(s, cell, input);
   const vendorCell = s.worksheets.some(w => w.stage === "EVALUASI_VENDOR" && w.tables.some(t => t.id === cell.tableId));
-  const ahsCell = s.worksheets.some(w => w.stage === "AHS" && w.tables.some(t => t.id === cell.tableId));
+  const ahsCell = s.worksheets.some(w => (w.stage === "AHS" || w.stage === "AHS_EXTERNAL") && w.tables.some(t => t.id === cell.tableId));
   requireCondition(vendorCell || ahsCell || !s.workbook?.cells.some(p => p.cellId === target && p.kind === "LABEL"), "Sel label tidak boleh dikosongkan.");
   requireCondition(!s.workbook?.bindings.some(b => b.cellId === target && ["cost", "supplier", "supplierName"].includes(b.key)), "Sel ini dikelola pilihan vendor atau solver.");
   requireCondition(!PROFILES.some(profile => s.profiles[profile].hppBase.cellId === target), "HPP mengikuti Biaya Konversi.");

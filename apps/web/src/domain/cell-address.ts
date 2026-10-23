@@ -1,5 +1,5 @@
 import type { WorkbookSnapshot } from "./contracts.ts";
-import { canvasCellAddresses, columnName } from "./canvas-address.ts";
+import { canvasCellAddresses, externalCellAddresses, columnName } from "./canvas-address.ts";
 import { ahsGroups, ahsLabel, ahsRoleCell } from "./ahs-groups.ts";
 import { vendorComponents } from "./vendor-components.ts";
 
@@ -18,6 +18,7 @@ function displayCode(code: string) {
 
 export function cellCodes(snapshot: WorkbookSnapshot): ReadonlyMap<string, string> {
   const codes = new Map<string, string>();
+  const external = { INU: externalCellAddresses(snapshot, "INU"), SOLAR_BAWAH: externalCellAddresses(snapshot, "SOLAR_BAWAH") };
   const presentation = new Map(snapshot.workbook?.cells.map(cell => [cell.cellId, cell.address]));
   for (const worksheet of snapshot.worksheets) for (const [tableIndex, table] of worksheet.tables.entries()) {
     const rows = new Map<string, number>(), columns = new Map<string, string>();
@@ -42,7 +43,12 @@ export function cellCodes(snapshot: WorkbookSnapshot): ReadonlyMap<string, strin
     for (const rowId of table.rowOrder) if (!rows.has(rowId)) rows.set(rowId, nextRow++);
     for (const columnId of table.columnOrder) if (!columns.has(columnId)) columns.set(columnId, columnName(nextColumn++));
     for (const cell of table.cells) {
+      if (worksheet.stage === "AHS_EXTERNAL") { codes.set(cell.id, `EXTERNAL!${external[cell.scope === "SHARED" ? snapshot.activeProfile : cell.scope].get(cell.id)}`); continue; }
       const row = table.rows.find(item => item.id === cell.rowId);
+      if (row?.label.startsWith("vendor-profile|")) {
+        codes.set(cell.id, `VP!${columns.get(cell.columnId)}${rows.get(cell.rowId)}`);
+        continue;
+      }
       const legacyAddress = row?.label.match(/^@([^|]+)\|/)?.[1];
       if (legacyAddress) { codes.set(cell.id, legacyAddress); continue; }
       const metadataAddress = worksheet.stage === "EVALUASI_VENDOR"
@@ -65,8 +71,10 @@ function formulaProfile(snapshot: WorkbookSnapshot, targetCellId?: string) {
 }
 
 export function displayFormula(expression: string, snapshot: WorkbookSnapshot, targetCellId?: string): string {
-  const addresses = canvasCellAddresses(snapshot, formulaProfile(snapshot, targetCellId));
-  return mapFormulaCode(expression, codeExpression => codeExpression.replace(/@\{([0-9a-fA-F-]+)\}/g, (token, id: string) => addresses.get(id) ?? token));
+  const profile = formulaProfile(snapshot, targetCellId);
+  const internal = canvasCellAddresses(snapshot, profile), external = externalCellAddresses(snapshot, profile);
+  const externalTarget = targetCellId && external.has(targetCellId);
+  return mapFormulaCode(expression, codeExpression => codeExpression.replace(/@\{([0-9a-fA-F-]+)\}/g, (token, id: string) => externalTarget ? external.get(id) ?? (internal.has(id) ? `INTERNAL!${internal.get(id)}` : token) : internal.get(id) ?? token));
 }
 
 export function describeCell(id: string, snapshot: WorkbookSnapshot): string {
@@ -120,8 +128,11 @@ export function resolveFormula(expression: string, snapshot: WorkbookSnapshot, t
   for (const [id, code] of codes) for (const key of [code.toUpperCase(), displayCode(code).toUpperCase()]) {
     const ids = matches.get(key) ?? new Set<string>(); ids.add(id); matches.set(key, ids);
   }
-  const addresses = new Map([...canvasCellAddresses(snapshot, formulaProfile(snapshot, targetCellId))].map(([id, address]) => [address, id]));
-  const addressPattern = "(?:(?:EV|INU|SOLAR|AHS-INU|AHS-SOLAR)(?:-T\\d+|\\d+)?!)?\\$?[A-Za-z]+\\$?[1-9]\\d*";
+  const profile = formulaProfile(snapshot, targetCellId);
+  const internal = canvasCellAddresses(snapshot, profile), external = externalCellAddresses(snapshot, profile);
+  const addresses = new Map([...(targetCellId && external.has(targetCellId) ? external : internal)].map(([id, address]) => [address, id]));
+  for (const [prefix, cells] of [["INTERNAL", internal], ["EXTERNAL", external]] as const) for (const [id, address] of cells) matches.set(`${prefix}!${address}`, new Set([id]));
+  const addressPattern = "(?:(?:EV|INU|SOLAR|AHS-INU|AHS-SOLAR|INTERNAL|EXTERNAL)(?:-T\\d+|\\d+)?!)?\\$?[A-Za-z]+\\$?[1-9]\\d*";
   let rangeMembers = 0;
   return mapFormulaCode(expression, codeExpression => {
     const expanded = codeExpression.replace(/\bSUM(?=\s*\()/gi, "SUM").replaceAll(";", ",")
@@ -139,7 +150,7 @@ export function resolveFormula(expression: string, snapshot: WorkbookSnapshot, t
         for (let row = top; row <= bottom; row++) for (let col = left; col <= right; col++) members.push(`${prefix ? prefix + "!" : ""}${columnName(col)}${row}`);
         return members.join(",");
       });
-    return expanded.replace(/@\{[0-9a-fA-F-]+\}|\b(?:EV|INU|SOLAR|AHS-INU|AHS-SOLAR)(?:-T\d+|\d+)?!\$?[A-Za-z]+\$?\d+\b|(?<![!A-Za-z0-9_])\$?[A-Za-z]+\$?\d+\b/gi, token => {
+    return expanded.replace(/@\{[0-9a-fA-F-]+\}|\b(?:EV|INU|SOLAR|AHS-INU|AHS-SOLAR|INTERNAL|EXTERNAL)(?:-T\d+|\d+)?!\$?[A-Za-z]+\$?\d+\b|(?<![!A-Za-z0-9_])\$?[A-Za-z]+\$?\d+\b/gi, token => {
       if (token.startsWith("@{")) return token;
       const code = token.toUpperCase().replaceAll("$", "");
       const ids = code.includes("!") ? [...matches.get(code) ?? []] : addresses.has(code) ? [addresses.get(code)!] : [];

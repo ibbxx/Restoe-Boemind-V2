@@ -27,13 +27,16 @@ export function addAhsField(s: WorkbookSnapshot, section: AhsField["section"], r
   const cells: CellSnapshot[] = table.columns.map(column => ({ id: id<"cell">(), tableId: table!.id, rowId, columnId: column.id,
     scope: profile, source: { kind: "INPUT", input: { kind: "TEXT", text: "" } } }));
   const at = (label: string) => cells.find(c => c.columnId === table!.columns.find(col => col.label === label)?.id)!;
-  const label = at("G"), value = at(section === "INFORMASI" ? "J" : "L");
+  const label = at("G"), value = at(section === "INFORMASI" ? "H" : "L");
   requireCondition(label && value && table.columns.length === 6, "Kolom bagian AHS tidak lengkap.");
   const field: AhsField = { profile, section, name, valueType, labelCellId: label.id, valueCellId: value.id };
   const rowOrder = [...table.rowOrder];
   const index = table.rowOrder.indexOf(anchor.rowId); rowOrder.splice(index < 0 ? rowOrder.length : index, 0, rowId);
-  const merges = [...table.merges, { id: id<"merge">(), anchorCellId: label.id, rowSpan: 1, colSpan: section === "INFORMASI" ? 3 : 5 },
-    ...(section === "INFORMASI" ? [{ id: id<"merge">(), anchorCellId: value.id, rowSpan: 1, colSpan: 3 }] : [])];
+  const merges = [...table.merges,
+    ...(section === "INFORMASI" ? [
+      { id: id<"merge">(), anchorCellId: value.id, rowSpan: 1, colSpan: 2 },
+      { id: id<"merge">(), anchorCellId: at("K").id, rowSpan: 1, colSpan: 2 },
+    ] : [{ id: id<"merge">(), anchorCellId: label.id, rowSpan: 1, colSpan: 5 }])];
   const updated: TableSnapshot = { ...table, rowOrder, rows: [...table.rows, { id: rowId, label: "ahs-field" }], merges,
     cells: [...table.cells, ...cells.map(c => c.id === label.id ? { ...c, source: { kind: "INPUT" as const, input: { kind: "TEXT" as const, text: name } } }
       : c.id === value.id ? { ...c, source: { kind: "INPUT" as const, input: valueType === "TEXT" ? { kind: "UNSET" as const } : { kind: "NUMERIC_TEXT" as const, text: "0" } } } : c)] };

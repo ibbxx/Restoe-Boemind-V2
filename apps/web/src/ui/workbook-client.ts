@@ -12,6 +12,7 @@ type ListEntry = { projectId: string | null; value: WorkbookList | undefined; sa
   pending: Promise<WorkbookList | undefined> | null };
 const listCache = new Map<string, ListEntry>();
 const LIST_TTL = 30000;
+let prefetchFlight: Promise<WorkbookList | undefined> | null = null;
 
 export function cachedWorkbookList<T extends WorkbookList>(actorId: string, url: string): T | undefined {
   return listCache.get(`${actorId}:${url}`)?.value as T | undefined;
@@ -54,12 +55,22 @@ export function invalidateWorkbookLists(projectId: string, projectsChanged = fal
   }
 }
 
+export function prefetchWorkbookList(actorId: string, url: string): Promise<WorkbookList | undefined> | null {
+  if (prefetchFlight) return null;
+  const { pending } = readWorkbookList(actorId, url);
+  if (!pending) return null;
+  prefetchFlight = pending;
+  void pending.finally(() => { if (prefetchFlight === pending) prefetchFlight = null; }).catch(() => {});
+  return pending;
+}
+
 export function invalidateSessionRequests() {
   sessionController.abort();
   sessionController = new AbortController();
   sessionFlight = null;
   refreshFlight = null;
   listCache.clear();
+  prefetchFlight = null;
 }
 
 // Share pending requests only; never retain an authenticated result after it settles.

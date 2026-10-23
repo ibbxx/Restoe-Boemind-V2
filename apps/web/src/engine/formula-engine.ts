@@ -1,4 +1,4 @@
-import type { WorkbookSnapshot } from "../domain/contracts.ts";
+import type { WorkbookSnapshot, WorksheetView } from "../domain/contracts.ts";
 import { createStableId } from "../domain/ids.ts";
 import { captureSnapshot, canonicalJson, freeze } from "../domain/snapshots.ts";
 import type { CalculationEngine, EngineConfiguration, EngineRun, NodeResult } from "./contracts.ts";
@@ -10,19 +10,34 @@ import { operationalGraph } from "./inu-solver.ts";
 export const ENGINE_VERSION = "phase3-grammar2-fixed-decimal4-inu-cent-precision18-current-offer";
 const issuedRuns = new WeakSet<EngineRun>();
 
+// A page switch only changes which existing results determine its status.
+export function worksheetRunView(run: EngineRun, view: WorksheetView): EngineRun {
+  const relevant = relevantNodes(run.manifest.snapshot, { nodes: new Map(run.results.map(result => [result.cellId, result])) }, view);
+  const allErrors = run.results.filter(result => !["VALUE", "ZERO", "TEXT"].includes(result.status));
+  const diagnostic = (result: NodeResult) => result.cellId + ":" + ("code" in result ? result.code : result.status);
+  const previousDiagnostics = new Set(allErrors.map(diagnostic));
+  const errors = allErrors.filter(result => relevant.has(result.cellId));
+  return Object.freeze({
+    ...run,
+    status: errors.length ? "ERROR" : "NONFINAL",
+    diagnostics: Object.freeze([...run.diagnostics.filter(message => !previousDiagnostics.has(message)), ...errors.map(diagnostic)]),
+    ...(run.provisional ? { provisional: Object.freeze({ ...run.provisional, status: run.provisional.results.some(result => relevant.has(result.cellId) && !["VALUE", "ZERO", "TEXT"].includes(result.status)) ? "ERROR" : "NONFINAL" }) } : {}),
+  });
+}
+
 export class FormulaEngine implements CalculationEngine {
   readonly version = ENGINE_VERSION;
   readonly configuration: EngineConfiguration;
 
   constructor(configuration: EngineConfiguration) { this.configuration = captureConfiguration(configuration); }
 
-  evaluate(snapshot: WorkbookSnapshot): EngineRun { return this.#calculate(snapshot); }
+  evaluate(snapshot: WorkbookSnapshot, view: "INTERNAL" | "EXTERNAL" = "INTERNAL"): EngineRun { return this.#calculate(snapshot, undefined, view); }
 
-  recalculate(snapshot: WorkbookSnapshot, previous: EngineRun): EngineRun {
-    return this.#calculate(snapshot, previous);
+  recalculate(snapshot: WorkbookSnapshot, previous: EngineRun, view: "INTERNAL" | "EXTERNAL" = "INTERNAL"): EngineRun {
+    return this.#calculate(snapshot, previous, view);
   }
 
-  #calculate(value: WorkbookSnapshot, previous?: EngineRun): EngineRun {
+  #calculate(value: WorkbookSnapshot, previous?: EngineRun, view: "INTERNAL" | "EXTERNAL" = "INTERNAL"): EngineRun {
     const snapshot = captureSnapshot(value);
     const configuration = this.configuration;
     const { graph, solver } = operationalGraph(snapshot, configuration, previous?.engineVersion === this.version ? previous : undefined);
@@ -72,7 +87,7 @@ export class FormulaEngine implements CalculationEngine {
     }
     const provisionalOrdered = [...provisionalResults.values()].sort((a, b) => a.cellId.localeCompare(b.cellId));
     const policyMatches = snapshot.policy.status === "CONFIGURED" && snapshot.policy.versionId === configuration.policyVersionId;
-    const relevant = relevantNodes(snapshot, graph);
+    const relevant = relevantNodes(snapshot, graph, view);
     const errors = ordered.filter(r => relevant.has(r.cellId) && !["VALUE", "ZERO", "TEXT"].includes(r.status));
     const run: EngineRun = freeze({
       ...(solver ? { solver } : {}),

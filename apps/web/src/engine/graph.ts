@@ -184,9 +184,10 @@ export function affectedNodes(before: DependencyGraph, after: DependencyGraph): 
   return affected;
 }
 
-export function relevantNodes(snapshot: WorkbookSnapshot, graph: DependencyGraph): ReadonlySet<string> {
+export function relevantNodes(snapshot: WorkbookSnapshot, graph: { readonly nodes: ReadonlyMap<string, { readonly dependencies: readonly string[] }> }, view: "INTERNAL" | "EXTERNAL" = "INTERNAL"): ReadonlySet<string> {
   const relevant = new Set<string>();
-  const queue: string[] = [...snapshot.profiles[snapshot.activeProfile].cellIds];
+  const external = new Set(snapshot.worksheets.filter(w => w.stage === "AHS_EXTERNAL").flatMap(w => w.tables.flatMap(t => t.cells.map(c => c.id))));
+  const queue: string[] = snapshot.profiles[snapshot.activeProfile].cellIds.filter(id => view === "EXTERNAL" ? external.has(id) : !external.has(id));
   for (let i = 0; i < queue.length; i++) {
     const id = queue[i]!;
     if (relevant.has(id)) continue;

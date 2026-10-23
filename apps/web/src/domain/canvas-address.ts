@@ -4,6 +4,7 @@ import { ahsGroups } from "./ahs-groups.ts";
 import { ahsFields } from "./ahs-fields.ts";
 import { vendorComponents, vendorComponentRoles } from "./vendor-components.ts";
 import { requireCondition } from "./validation.ts";
+import { isVendorProfileTable } from "./vendor-profile.ts";
 
 const cache = new WeakMap<WorkbookSnapshot, Map<Profile, ReadonlyMap<string, string>>>();
 
@@ -18,7 +19,7 @@ export function canvasCellAddresses(s: WorkbookSnapshot, profile: Profile = s.ac
   const cached = cache.get(s)?.get(profile);
   if (cached) return cached;
   const addresses = new Map<string, string>(), occupied = new Map<string, string>();
-  const worksheets = s.worksheets.map(w => ({ ...w, tables: w.tables.filter(t => t.cells.some(c => c.scope === "SHARED" || c.scope === profile)) }));
+  const worksheets = s.worksheets.filter(w => w.stage !== "AHS_EXTERNAL").map(w => ({ ...w, tables: w.tables.filter(t => t.cells.some(c => c.scope === "SHARED" || c.scope === profile)) }));
   const cells = worksheets.flatMap(w => w.tables.flatMap(t => t.cells.filter(c => c.scope === "SHARED" || c.scope === profile)));
   const put = (cell: CellSnapshot | undefined, row: number, column: number) => {
     if (!cell) return;
@@ -34,7 +35,7 @@ export function canvasCellAddresses(s: WorkbookSnapshot, profile: Profile = s.ac
     vendorWidth = Math.max(vendorWidth, ...vendors?.tables.map(t => t.columnOrder.length) ?? []);
     const place = (stage: WorksheetSnapshot["stage"], top: number, left: number) => {
       let row = top;
-      for (const table of worksheets.find(w => w.stage === stage)?.tables ?? []) {
+      for (const table of worksheets.find(w => w.stage === stage)?.tables.filter(table => stage !== "EVALUASI_VENDOR" || !isVendorProfileTable(table)) ?? []) {
         const rows = table.rowOrder.filter(rowId => {
           if (stage !== "KONVERSI_JAGAD" || profile !== "SOLAR_BAWAH") return true;
           const address = table.cells.filter(c => c.rowId === rowId).map(c => metadata.get(c.id)).find(Boolean);
@@ -117,10 +118,13 @@ export function canvasCellAddresses(s: WorkbookSnapshot, profile: Profile = s.ac
         put(find("AHS", label), index + 1, left + column * 3 + 1);
       }
     }
+    put(caption("G", 7), 4, left);
+    put(find("AHS", "Harga Keekonomian"), 4, left + 1);
+    put(find("AHS", "AHS_RIGHT_LABEL"), 4, left + 3);
+    put(find("AHS", "AHS_RIGHT_VALUE"), 4, left + 4);
     let row = 5;
     for (const field of ahsFields(s, "INFORMASI", profile)) {
-      itemRow(field.valueCellId, row); put(cells.find(c => c.id === field.labelCellId), row, left);
-      put(cells.find(c => c.id === field.valueCellId), row++, left + 3);
+      itemRow(field.valueCellId, row++);
     }
     put(caption("G", 8), row, left); put(find("AHS", "Harga Include"), row++, left + 3);
     summary("TOTAL PENDAPATAN", 9, row++); summary("HARGA JUAL SETELAH PAJAK", 10, row++);
@@ -149,5 +153,15 @@ export function canvasCellAddresses(s: WorkbookSnapshot, profile: Profile = s.ac
   }
   const profiles = cache.get(s) ?? new Map<Profile, ReadonlyMap<string, string>>();
   profiles.set(profile, addresses); cache.set(s, profiles);
+  return addresses;
+}
+
+export function externalCellAddresses(s: WorkbookSnapshot, profile: Profile = s.activeProfile): ReadonlyMap<string, string> {
+  const addresses = new Map<string, string>();
+  let offset = 0;
+  for (const table of s.worksheets.find(w => w.stage === "AHS_EXTERNAL")?.tables.filter(t => t.cells.some(c => c.scope === profile)) ?? []) {
+    for (const cell of table.cells) addresses.set(cell.id, columnName(table.columnOrder.indexOf(cell.columnId)) + (offset + table.rowOrder.indexOf(cell.rowId) + 1));
+    offset += table.rowOrder.length;
+  }
   return addresses;
 }
